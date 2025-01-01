@@ -7,4 +7,5 @@ edition = "2021"
 [lib]
 
 [dependencies]
-amd_comgr-sys = { path = "../ext/amd_comgr-sys" }
+# amd_comgr-sys = { path = "../ext/amd_comgr-sys" }
+intel_comgr-sys = { path = "../ext/intel_comgr-sys" }

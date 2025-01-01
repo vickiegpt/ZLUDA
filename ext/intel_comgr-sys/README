@@ -1,0 +1,5 @@
+bindgen  /usr/local/lib/opencl-clang/common_clang.h -o /tmp/intel_comgr.rs   -- -I/usr/local/lib/intel-graphics-compiler -I/usr/local/lib/intel-graphics-com
+piler     -I/usr/include/c++/11     -I/usr/include/x86_64-linux-gnu/c++/11     -I/usr/include     -std=c++11     -x c++ -I$PWD/in
+c/common/Compiler/API/ -I$PWD/IGC -I$PWD/inc/common -std=c++17 -I$PWD/3d/common -I$PWD/visa/include -I$PWD/IGC/common -I$PWD/IGC/
+WrapperLLVM/include -I$PWD/build/IGC/Release/ -I/usr/include/llvm-14/ -I$PWD/IGC/ZEBinWriter/zebin/source/autogen/ -I/usr/local/l
+ib/intel-graphics-compiler/IGC/AdaptorOCL/ -I$PWD/inc -I$PWD/IGC/ZEBinWriter/zebin/source/ 

@@ -1,4 +1,7 @@
+#[cfg(feature = "amd")]
 use hip_runtime_sys::*;
+#[cfg(feature = "intel")]
+use opencl_sys::*;
 
 pub(crate) fn get_attribute(
     pi: &mut i32,

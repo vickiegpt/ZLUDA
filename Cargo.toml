@@ -3,8 +3,7 @@
 resolver = "2"
 
 members = [
-    "ext/hip_runtime-sys",
-    "ext/amd_comgr-sys",
+    "ext/opencl-sys",
     "comgr",
     "cuda_base",
     "cuda_types",
@@ -18,7 +17,7 @@ members = [
     "ptx_parser",
     "ptx_parser_macros",
     "ptx_parser_macros_impl",
-    "zluda_bindgen",
+    "zluda_bindgen", "ext/intel_comgr-sys",
 ]
 
 default-members = ["zluda", "zluda_ml", "zluda_inject", "zluda_redirect"]

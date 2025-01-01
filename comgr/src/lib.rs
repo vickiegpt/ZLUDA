@@ -1,4 +1,4 @@
-use amd_comgr_sys::*;
+use intel_comgr_sys::*;
 use std::{ffi::CStr, mem, ptr};
 
 struct Data(amd_comgr_data_t);
@@ -113,7 +113,7 @@ pub fn compile_bitcode(
     main_buffer: &[u8],
     ptx_impl: &[u8],
 ) -> Result<Vec<u8>, amd_comgr_status_s> {
-    use amd_comgr_sys::*;
+    use intel_comgr_sys::*;
     let bitcode_data_set = DataSet::new()?;
     let main_bitcode_data = Data::new(
         amd_comgr_data_kind_t::AMD_COMGR_DATA_KIND_BC,

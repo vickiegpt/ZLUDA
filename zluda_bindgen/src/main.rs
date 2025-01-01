@@ -10,10 +10,11 @@ use syn::{
 
 fn main() {
     let crate_root = PathBuf::from_str(env!("CARGO_MANIFEST_DIR")).unwrap();
-    generate_hip_runtime(
-        &crate_root,
-        &["..", "ext", "hip_runtime-sys", "src", "lib.rs"],
-    );
+    // generate_hip_runtime(
+    //     &crate_root,
+    //     &["..", "ext", "hip_runtime-sys", "src", "lib.rs"],
+    // );
+    generate_opencl(&crate_root, &["..", "ext", "opencl-sys", "src", "lib.rs"]);
     generate_ml(&crate_root);
     generate_cuda(&crate_root);
 }
