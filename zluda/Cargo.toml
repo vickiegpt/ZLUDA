@@ -9,7 +9,7 @@ name = "nvcuda"
 crate-type = ["cdylib"]
 
 [features]
-intel = ["opencl-sys"]
+intel = ["ze_runtime-sys"]
 amd = ["hip_runtime-sys"]
 
 [dependencies]
@@ -24,7 +24,7 @@ lz4-sys = "1.9"
 tempfile = "3"
 paste = "1.0"
 rustc-hash = "1.1"
-opencl-sys = { path = "../ext/opencl-sys", optional = true }
+ze_runtime-sys = { path = "../ext/ze_runtime-sys", optional = true }
 hip_runtime-sys = { path = "../ext/hip_runtime-sys", optional = true }
 
 [target.'cfg(windows)'.dependencies]

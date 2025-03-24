@@ -1,0 +1,21 @@
+[package]
+name = "ze_runtime-sys"
+version = "0.1.0"
+edition = "2024"
+description = "Rust bindings for oneAPI Level Zero Runtime API"
+license = "MIT"
+authors = ["ZLUDA Team"]
+readme = "README.md"
+
+[dependencies]
+libloading = "0.8"
+
+[build-dependencies]
+bindgen = { version = "0.69", features = ["runtime"] }
+
+[lib]
+name = "ze_runtime_sys"
+path = "src/lib.rs"
+
+[features]
+default = []

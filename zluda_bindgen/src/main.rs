@@ -10,11 +10,16 @@ use syn::{
 
 fn main() {
     let crate_root = PathBuf::from_str(env!("CARGO_MANIFEST_DIR")).unwrap();
-    // generate_hip_runtime(
-    //     &crate_root,
-    //     &["..", "ext", "hip_runtime-sys", "src", "lib.rs"],
-    // );
-    generate_opencl(&crate_root, &["..", "ext", "opencl-sys", "src", "lib.rs"]);
+    #[cfg(feature = "amd")]
+    generate_hip_runtime(
+        &crate_root,
+        &["..", "ext", "hip_runtime-sys", "src", "lib.rs"],
+    );
+    #[cfg(feature = "intel")]
+    generate_ze_runtime(
+        &crate_root,
+        &["..", "ext", "ze_runtime-sys", "src", "lib.rs"],
+    );
     generate_ml(&crate_root);
     generate_cuda(&crate_root);
 }
@@ -267,6 +272,7 @@ fn generate_types_cuda(output: &PathBuf, path: &[&str], module: &syn::File) {
         })
         .collect::<Vec<_>>();
     converter.flush(&mut module.items);
+    
     module.items.push(parse_quote! {
         impl From<hip_runtime_sys::hipErrorCode_t> for CUerror {
             fn from(error: hip_runtime_sys::hipErrorCode_t) -> Self {
@@ -798,4 +804,184 @@ fn curesult_display_trait(derive_state: &DeriveDisplayState) -> syn::Item {
             }
         }
     }
+}
+
+fn generate_ze_runtime(output: &PathBuf, path: &[&str]) {
+    let ze_header = bindgen::Builder::default()
+        .use_core()
+        .rust_target(bindgen::RustTarget::Stable_1_77)
+        .layout_tests(false)
+        .default_enum_style(bindgen::EnumVariation::NewType {
+            is_bitfield: false,
+            is_global: false,
+        })
+        .derive_hash(true)
+        .derive_eq(true)
+        .header_contents(
+            "ze_wrapper.h",
+            r#"
+            #include <level_zero/ze_api.h>
+            "#,
+        )
+        .allowlist_type("^ze.*")
+        .allowlist_function("^ze.*")
+        .allowlist_var("^ZE.*")
+        .must_use_type("ze_result_t")
+        .constified_enum("ze_result_t")
+        .new_type_alias("^ze_device_handle_t$")
+        .new_type_alias("^ze_driver_handle_t$")
+        .new_type_alias("^ze_context_handle_t$")
+        .new_type_alias("^ze_command_queue_handle_t$")
+        .new_type_alias("^ze_command_list_handle_t$")
+        .new_type_alias("^ze_module_handle_t$")
+        .new_type_alias("^ze_kernel_handle_t$")
+        .new_type_alias("^ze_event_handle_t$")
+        .new_type_alias("^ze_event_pool_handle_t$")
+        .new_type_alias("^ze_image_handle_t$")
+        .new_type_alias("^ze_fence_handle_t$")
+        .clang_args(["-I/usr/local/include"])
+        .generate()
+        .unwrap()
+        .to_string();
+    
+    let mut module: syn::File = syn::parse_str(&ze_header).unwrap();
+    let mut converter = ConvertIntoRustResult {
+        type_: "ze_result_t",
+        underlying_type: "ze_result_t",
+        new_error_type: "ZeError",
+        error_prefix: ("ZE_RESULT_ERROR", "ERROR"),
+        success: ("ZE_RESULT_SUCCESS", "SUCCESS"),
+        constants: Vec::new(),
+    };
+    module.items = module
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::Const(const_) => converter.get_const(const_).map(Item::Const),
+            Item::Use(use_) => converter.get_use(use_).map(Item::Use),
+            Item::Type(type_) => converter.get_type(type_).map(Item::Type),
+            item => Some(item),
+        })
+        .collect::<Vec<_>>();
+    converter.flush(&mut module.items);
+    add_send_sync(
+        &mut module.items,
+        &[
+            "ze_device_handle_t",
+            "ze_driver_handle_t",
+            "ze_context_handle_t",
+            "ze_command_queue_handle_t",
+            "ze_command_list_handle_t",
+            "ze_module_handle_t",
+            "ze_kernel_handle_t",
+            "ze_event_handle_t",
+            "ze_event_pool_handle_t",
+            "ze_image_handle_t",
+            "ze_fence_handle_t",
+        ],
+    );
+    
+    // Add dynamic loading helpers
+    module.items.push(parse_quote! {
+        use std::sync::Once;
+        use std::sync::atomic::{AtomicPtr, Ordering};
+        use std::ffi::c_void;
+
+        static INIT: Once = Once::new();
+        static mut LIBRARY: Option<libloading::Library> = None;
+
+        pub fn ensure_loaded() -> Result<(), String> {
+            INIT.call_once(|| {
+                unsafe {
+                    let lib_paths = [
+                        "libze_loader.so.1",
+                        "libze_loader.so",
+                        "/usr/lib/libze_loader.so.1",
+                        "/usr/local/lib/libze_loader.so.1",
+                        "/usr/lib/x86_64-linux-gnu/libze_loader.so.1",
+                    ];
+                    
+                    for path in &lib_paths {
+                        match libloading::Library::new(*path) {
+                            Ok(lib) => {
+                                LIBRARY = Some(lib);
+                                break;
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                }
+            });
+            
+            unsafe {
+                if LIBRARY.is_none() {
+                    return Err("Could not find libze_loader.so - please install oneAPI Level Zero".to_string());
+                }
+            }
+            
+            Ok(())
+        }
+
+        pub fn get_symbol<T>(name: &[u8]) -> Result<T, String> {
+            ensure_loaded()?;
+            
+            unsafe {
+                let library = LIBRARY.as_ref().unwrap();
+                match library.get(name) {
+                    Ok(symbol) => Ok(*symbol),
+                    Err(e) => Err(format!("Failed to load symbol {:?}: {}", 
+                                          std::str::from_utf8_unchecked(name), e))
+                }
+            }
+        }
+    });
+
+    // Create a temporary vector to hold new declarations
+    let mut new_items = Vec::new();
+
+    // Create helpers to dynamically load function pointers
+    for item in module.items.iter_mut() {
+        if let Item::ForeignMod(foreign_mod) = item {
+            if !foreign_mod.items.is_empty() {
+                let declarations = foreign_mod.items.iter().filter_map(|item| {
+                    if let ForeignItem::Fn(fn_item) = item {
+                        let fn_name = &fn_item.sig.ident;
+                        let fn_name_str = fn_name.to_string();
+                        let static_name = format_ident!("{}_PTR", fn_name_str.to_uppercase());
+                        let fn_type = &fn_item.sig;
+                        
+                        Some(parse_quote! {
+                            static #static_name: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+                            
+                            pub fn #fn_name #fn_type {
+                                let mut ptr = #static_name.load(Ordering::Relaxed);
+                                if ptr.is_null() {
+                                    if let Ok(symbol) = get_symbol(stringify!(#fn_name).as_bytes()) {
+                                        ptr = symbol;
+                                        #static_name.store(ptr, Ordering::Relaxed);
+                                    } else {
+                                        return Err(ZeError::ERROR_UNINITIALIZED);
+                                    }
+                                }
+                                let func: unsafe extern "system" fn #fn_type = unsafe { std::mem::transmute(ptr) };
+                                unsafe { func($($arg_name),*) }
+                            }
+                        })
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<Item>>();
+                
+                // If we found function declarations, add them to the temporary vector
+                new_items.extend(declarations);
+            }
+        }
+    }
+    
+    // After loop completes, add all new items at once
+    module.items.extend(new_items);
+
+    let mut output = output.clone();
+    output.extend(path);
+    write_rust_to_file(output, &prettyplease::unparse(&module))
 }

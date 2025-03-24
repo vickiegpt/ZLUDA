@@ -6,5 +6,9 @@ edition = "2018"
 
 [dependencies]
 cuda_base = { path = "../cuda_base" }
-# hip_runtime-sys = { path = "../ext/hip_runtime-sys" }
-opencl-sys = { path = "../ext/opencl-sys" }
+hip_runtime-sys = { path = "../ext/hip_runtime-sys" , optional = true }
+ze_runtime-sys = { path = "../ext/ze_runtime-sys" , optional = true }
+
+[features]
+intel = ["ze_runtime-sys"]
+amd = ["hip_runtime-sys"]
