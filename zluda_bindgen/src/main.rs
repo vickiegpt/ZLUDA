@@ -272,10 +272,18 @@ fn generate_types_cuda(output: &PathBuf, path: &[&str], module: &syn::File) {
         })
         .collect::<Vec<_>>();
     converter.flush(&mut module.items);
-    
+    #[cfg(feature = "amd")]
     module.items.push(parse_quote! {
         impl From<hip_runtime_sys::hipErrorCode_t> for CUerror {
             fn from(error: hip_runtime_sys::hipErrorCode_t) -> Self {
+                Self(error.0)
+            }
+        }
+    });
+    #[cfg(feature = "intel")]
+    module.items.push(parse_quote! {
+        impl From<ze_runtime_sys::ze_result_t> for CUerror {
+            fn from(error: ze_runtime_sys::ze_result_t) -> Self {
                 Self(error.0)
             }
         }

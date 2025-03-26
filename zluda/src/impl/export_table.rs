@@ -1,7 +1,11 @@
+use cuda_types::cuda::*;
+#[cfg(feature = "amd")]
 use hip_runtime_sys::{
     hipCtxCreate, hipDevicePrimaryCtxGetState, hipDevicePrimaryCtxRelease,
     hipDevicePrimaryCtxRetain, hipError_t,
 };
+#[cfg(feature = "intel")]
+use ze_runtime_sys::*;
 use ocl_core::ffi::c_uchar;
 
 use crate::r#impl;
@@ -140,10 +144,18 @@ static CUDART_INTERFACE_VTABLE: [VTableEntry; CUDART_INTERFACE_LENGTH] = [
 ];
 
 unsafe extern "system" fn cudart_interface_fn1(pctx: *mut CUcontext, dev: CUdevice) -> CUresult {
-    cudart_interface_fn1_impl(pctx, dev.0).into()
+    #[cfg(feature = "amd")]
+    return cudart_interface_fn1_impl_amd(pctx, dev.0).into();
+    
+    #[cfg(feature = "intel")]
+    return cudart_interface_fn1_impl_intel(pctx, dev.0);
+    
+    #[cfg(not(any(feature = "amd", feature = "intel")))]
+    return CUresult::CUDA_ERROR_NOT_SUPPORTED;
 }
 
-fn cudart_interface_fn1_impl(pctx: *mut CUcontext, dev: c_int) -> hipError_t {
+#[cfg(feature = "amd")]
+fn cudart_interface_fn1_impl_amd(pctx: *mut CUcontext, dev: c_int) -> hipError_t {
     let mut hip_ctx = ptr::null_mut();
     let err = unsafe { hipDevicePrimaryCtxRetain(&mut hip_ctx, dev) };
     if err != hipError_t::hipSuccess {
@@ -155,6 +167,25 @@ fn cudart_interface_fn1_impl(pctx: *mut CUcontext, dev: c_int) -> hipError_t {
     }
     unsafe { *pctx = hip_ctx as _ };
     hipError_t::hipSuccess
+}
+
+#[cfg(feature = "intel")]
+fn cudart_interface_fn1_impl_intel(pctx: *mut CUcontext, dev: c_int) -> CUresult {
+    let mut ze_device = ptr::null_mut();
+    
+    // Get device
+    let result = device::primary_context_retain(pctx, ze_device);
+    if result.is_err() {
+        return CUresult::CUDA_ERROR_INVALID_DEVICE;
+    }
+    
+    // Release the primary context (decrement ref count)
+    let result = device::primary_context_release(ze_device);
+    if result.is_err() {
+        return CUresult::CUDA_ERROR_UNKNOWN;
+    }
+    
+    CUresult::CUDA_SUCCESS
 }
 
 /*
@@ -491,7 +522,24 @@ extern "system" fn ctx_create_v2_bypass(
     flags: ::std::os::raw::c_uint,
     dev: CUdevice,
 ) -> CUresult {
-    unsafe { hipCtxCreate(pctx as _, flags, dev.0).into() }
+    #[cfg(feature = "amd")]
+    return unsafe { hipCtxCreate(pctx as _, flags, dev.0).into() };
+    
+    #[cfg(feature = "intel")]
+    {
+        // In Level Zero, we don't have an exact equivalent of hipCtxCreate
+        // Instead, we'll create a context for the device and return it
+        match crate::r#impl::context::new(dev.0 as _) {
+            Ok(ctx) => {
+                unsafe { *pctx = ctx.as_handle() };
+                CUresult::CUDA_SUCCESS
+            }
+            Err(e) => e.into()
+        }
+    }
+    
+    #[cfg(not(any(feature = "amd", feature = "intel")))]
+    return CUresult::CUDA_ERROR_NOT_SUPPORTED;
 }
 
 const HEAP_ACCESS_GUID: CUuuid = CUuuid {

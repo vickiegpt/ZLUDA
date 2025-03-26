@@ -1,23 +1,88 @@
-use cuda_types::cuda::*;
-use hip_runtime_sys::*;
-use std::{mem, ptr};
-
 use super::context;
+use cuda_types::cuda::*;
+#[cfg(feature = "amd")]
+use hip_runtime_sys::*;
+use std::ffi::c_char;
+use std::{mem, ptr};
+#[cfg(feature = "intel")]
+use ze_runtime_sys::*;
 
 const PROJECT_SUFFIX: &[u8] = b" [ZLUDA]\0";
 pub const COMPUTE_CAPABILITY_MAJOR: i32 = 8;
 pub const COMPUTE_CAPABILITY_MINOR: i32 = 8;
 
+#[cfg(feature = "amd")]
 pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, _dev: hipDevice_t) -> CUresult {
     *major = COMPUTE_CAPABILITY_MAJOR;
     *minor = COMPUTE_CAPABILITY_MINOR;
     Ok(())
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn compute_capability(
+    major: &mut i32,
+    minor: &mut i32,
+    _dev: ze_device_handle_t,
+) -> CUresult {
+    *major = COMPUTE_CAPABILITY_MAJOR;
+    *minor = COMPUTE_CAPABILITY_MINOR;
+    Ok(())
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn get(device: *mut hipDevice_t, ordinal: i32) -> hipError_t {
     unsafe { hipDeviceGet(device, ordinal) }
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn get(device: *mut ze_device_handle_t, ordinal: i32) -> ze_result_t {
+    unsafe {
+        // Initialize Level Zero
+        match zeInit(0) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        // Get driver count
+        let mut driver_count = 0;
+        match zeDriverGet(&mut driver_count, ptr::null_mut()) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        // Get drivers
+        let mut drivers = vec![ptr::null_mut(); driver_count as usize];
+        match zeDriverGet(&mut driver_count, drivers.as_mut_ptr()) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        // Get device count for the first driver
+        let mut device_count = 0;
+        match zeDeviceGet(drivers[0], &mut device_count, ptr::null_mut()) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        if ordinal >= device_count as i32 {
+            return ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT;
+        }
+
+        // Get devices
+        let mut devices = vec![ptr::null_mut(); device_count as usize];
+        match zeDeviceGet(drivers[0], &mut device_count, devices.as_mut_ptr()) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        // Set the requested device
+        *device = devices[ordinal as usize];
+
+        ze_result_t::ZE_RESULT_SUCCESS
+    }
+}
+
+#[cfg(feature = "amd")]
 #[allow(warnings)]
 trait DeviceAttributeNames {
     const hipDeviceAttributeGpuOverlap: hipDeviceAttribute_t =
@@ -50,21 +115,46 @@ trait DeviceAttributeNames {
         hipDeviceAttribute_t::hipDeviceAttributeSharedMemPerBlockOptin;
 }
 
-impl DeviceAttributeNames for hipDeviceAttribute_t {}
-
-macro_rules! remap_attribute {
-    ($attrib:expr => $([ $($word:expr)* ]),*,) => {
-        match $attrib {
-            $(
-                paste::paste! { CUdevice_attribute:: [< CU_DEVICE_ATTRIBUTE $(_ $word:upper)* >] } => {
-                    paste::paste! { hipDeviceAttribute_t:: [< hipDeviceAttribute $($word:camel)* >] }
-                }
-            )*
-            _ => return Err(hipErrorCode_t::NotSupported)
-        }
-    }
+#[cfg(feature = "intel")]
+#[allow(warnings)]
+trait DeviceAttributeNames {
+    const CU_DEVICE_ATTRIBUTE_GPU_OVERLAP: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_GPU_OVERLAP;
+    const CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_WIDTH: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_WIDTH;
+    const CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_WIDTH: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_WIDTH;
+    const CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_HEIGHT: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_HEIGHT;
+    const CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_WIDTH: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_WIDTH;
+    const CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_HEIGHT: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_HEIGHT;
+    const CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_DEPTH: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_DEPTH;
+    const CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH;
+    const CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR;
+    const CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT;
+    const CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID;
+    const CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD;
+    const CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD_GROUP_ID: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD_GROUP_ID;
+    const CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN: CUdevice_attribute =
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN;
 }
 
+#[cfg(feature = "amd")]
+impl DeviceAttributeNames for hipDeviceAttribute_t {}
+
+#[cfg(feature = "intel")]
+impl DeviceAttributeNames for CUdevice_attribute {}
+
+#[cfg(feature = "amd")]
 pub(crate) fn get_attribute(
     pi: &mut i32,
     attrib: CUdevice_attribute,
@@ -348,14 +438,311 @@ pub(crate) fn get_attribute(
     unsafe { hipDeviceGetAttribute(pi, attrib, dev_idx) }
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn get_attribute(
+    pi: &mut i32,
+    attrib: CUdevice_attribute,
+    dev_idx: ze_device_handle_t,
+) -> ze_result_t {
+    let mut props: ze_device_properties_t = unsafe { mem::zeroed() };
+    props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+
+    unsafe {
+        match zeDeviceGetProperties(dev_idx, &mut props) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+    }
+
+    match attrib {
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_WARP_SIZE => {
+            *pi = 32;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK => {
+            *pi = props.numThreadsPerEU as i32 * 32; // Estimate based on EU count
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X => {
+            *pi = props.numThreadsPerEU as i32 * 8; // Estimate based on EU count
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y => {
+            *pi = 65535;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z => {
+            *pi = 65535;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X => {
+            *pi = 65535;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y => {
+            *pi = 65535;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z => {
+            *pi = 65535;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK => {
+            *pi = props.sharedLocalMemSize as i32;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY => {
+            *pi = 65536; // Default size for constant memory
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_PITCH => {
+            *pi = props.maxMemAllocSize as i32;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK => {
+            *pi = 64; // Default value since there's no direct equivalent
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CLOCK_RATE => {
+            *pi = props.coreClockRate as i32;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_GPU_OVERLAP => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT => {
+            *pi = props.numEUs as i32;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_INTEGRATED => {
+            *pi = 0;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_MODE => {
+            *pi = 0;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_WIDTH => {
+            *pi = 16384; // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_WIDTH => {
+            *pi = 16384; // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_HEIGHT => {
+            *pi = 16384; // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_WIDTH => {
+            *pi = 2048; // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_HEIGHT => {
+            *pi = 2048; // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_DEPTH => {
+            *pi = 2048; // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_SURFACE_ALIGNMENT => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_ECC_ENABLED => {
+            *pi = 0;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_BUS_ID => {
+            *pi = 0;  // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID => {
+            *pi = 0;  // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE => {
+            *pi = 0; // Not available in Level Zero API
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH => {
+            *pi = 0; // Not available in Level Zero API
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE => {
+            *pi = props.maxMemAllocSize as i32 / 10; // Estimate
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR => {
+            *pi = props.numThreadsPerEU as i32;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_UNIFIED_ADDRESSING => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID => {
+            *pi = 0;  // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TEXTURE_PITCH_ALIGNMENT => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_STREAM_PRIORITIES_SUPPORTED => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_GLOBAL_L1_CACHE_SUPPORTED => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_LOCAL_L1_CACHE_SUPPORTED => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR => {
+            *pi = props.sharedLocalMemSize as i32;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_MULTIPROCESSOR => {
+            *pi = 64; // Default value
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MANAGED_MEMORY => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD => {
+            *pi = 0;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD_GROUP_ID => {
+            *pi = 0;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_HOST_NATIVE_ATOMIC_SUPPORTED => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_SINGLE_TO_DOUBLE_PRECISION_PERF_RATIO => {
+            *pi = 2;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_PREEMPTION_SUPPORTED => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CAN_USE_HOST_POINTER_FOR_REGISTERED_MEM => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COOPERATIVE_MULTI_DEVICE_LAUNCH => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN => {
+            *pi = props.sharedLocalMemSize as i32;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_HOST_REGISTER_SUPPORTED => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_DIRECT_MANAGED_MEM_ACCESS_FROM_HOST => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED => {
+            *pi = 1;
+            ze_result_t::ZE_RESULT_SUCCESS
+        }
+        _ => ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE,
+    }
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn get_uuid(uuid: *mut hipUUID, device: hipDevice_t) -> hipError_t {
     unsafe { hipDeviceGetUuid(uuid, device) }
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn get_uuid(uuid: *mut ze_device_uuid_t, device: ze_device_handle_t) -> ze_result_t {
+    let mut props: ze_device_properties_t = unsafe { mem::zeroed() };
+    props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+
+    unsafe {
+        match zeDeviceGetProperties(device, &mut props) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+    }
+
+    // Copy UUID from device properties
+    unsafe {
+        ptr::copy_nonoverlapping(
+            props.uuid.id.as_ptr(),
+            (*uuid).bytes.as_mut_ptr(),
+            16,
+        );
+    }
+
+    ze_result_t::ZE_RESULT_SUCCESS
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn get_uuid_v2(uuid: *mut hipUUID, device: hipDevice_t) -> hipError_t {
     get_uuid(uuid, device)
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn get_uuid_v2(uuid: *mut ze_device_uuid_t, device: ze_device_handle_t) -> ze_result_t {
+    get_uuid(uuid, device)
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn get_luid(
     luid: *mut ::core::ffi::c_char,
     device_node_mask: &mut ::core::ffi::c_uint,
@@ -373,6 +760,35 @@ pub(crate) fn get_luid(
     Ok(())
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn get_luid(
+    luid: *mut ::core::ffi::c_char,
+    device_node_mask: &mut ::core::ffi::c_uint,
+    dev: ze_device_handle_t,
+) -> ze_result_t {
+    let luid = unsafe {
+        luid.cast::<[i8; 8]>()
+            .as_mut()
+            .ok_or(ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT)
+    }?;
+
+    let mut props: ze_device_properties_t = unsafe { mem::zeroed() };
+    props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+
+    unsafe {
+        let _ = zeDeviceGetProperties(dev, &mut props);
+    }
+
+    // Set LUID and device node mask
+    unsafe {
+        ptr::copy_nonoverlapping(props.uuid.id.as_ptr(), luid.as_mut_ptr() as *mut u8, 8);
+    }
+    *device_node_mask = 1;
+
+    ze_result_t::ZE_RESULT_SUCCESS
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn get_name(
     name: *mut ::core::ffi::c_char,
     len: ::core::ffi::c_int,
@@ -400,10 +816,74 @@ pub(crate) fn get_name(
     Ok(())
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn get_name(
+    name: *mut ::core::ffi::c_char,
+    len: ::core::ffi::c_int,
+    dev: ze_device_handle_t,
+) -> CUresult {
+    let mut props: ze_device_properties_t = unsafe { mem::zeroed() };
+    props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+
+    unsafe {
+        let result = zeDeviceGetProperties(dev, &mut props);
+        if result != ze_result_t::ZE_RESULT_SUCCESS {
+            return Err(CUerror::UNKNOWN);
+        }
+    }
+
+    let name_len = props.name.len();
+    if name_len >= len as usize {
+        return Ok(());
+    }
+
+    unsafe {
+        ptr::copy_nonoverlapping(props.name.as_ptr(), name, name_len);
+    }
+
+    let len = len as usize;
+    let buffer = unsafe { std::slice::from_raw_parts(name, len) };
+    let first_zero = buffer.iter().position(|c| *c == 0);
+    let first_zero = if let Some(x) = first_zero {
+        x
+    } else {
+        return Ok(());
+    };
+    if (first_zero + PROJECT_SUFFIX.len()) > len {
+        return Ok(());
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(
+            PROJECT_SUFFIX.as_ptr() as _,
+            name.add(first_zero),
+            PROJECT_SUFFIX.len(),
+        )
+    };
+    Ok(())
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn total_mem_v2(bytes: *mut usize, dev: hipDevice_t) -> hipError_t {
     unsafe { hipDeviceTotalMem(bytes, dev) }
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn total_mem_v2(bytes: *mut usize, dev: ze_device_handle_t) -> ze_result_t {
+    let mut props: ze_device_properties_t = unsafe { mem::zeroed() };
+    props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+
+    unsafe {
+        let _ = zeDeviceGetProperties(dev, &mut props);
+    }
+
+    unsafe {
+        *bytes = props.maxMemAllocSize as usize;
+    }
+
+    ze_result_t::ZE_RESULT_SUCCESS
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn get_properties(prop: &mut CUdevprop, dev: hipDevice_t) -> hipError_t {
     let mut hip_props = unsafe { mem::zeroed() };
     unsafe { hipGetDevicePropertiesR0600(&mut hip_props, dev) }?;
@@ -419,14 +899,73 @@ pub(crate) fn get_properties(prop: &mut CUdevprop, dev: hipDevice_t) -> hipError
     Ok(())
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn get_properties(prop: &mut CUdevprop, dev: ze_device_handle_t) -> ze_result_t {
+    let mut props: ze_device_properties_t = unsafe { mem::zeroed() };
+    props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+
+    unsafe {
+        let _ = zeDeviceGetProperties(dev, &mut props);
+    }
+
+    prop.maxThreadsPerBlock = props.numEUsPerSubslice as i32 * props.numThreadsPerEU as i32;
+    prop.maxThreadsDim = [prop.maxThreadsPerBlock, 65535, 65535];
+    prop.maxGridSize = [65535, 65535, 65535];
+    prop.totalConstantMemory = clamp_usize(props.maxMemAllocSize as usize);
+    prop.SIMDWidth = 32;
+    prop.memPitch = clamp_usize(props.maxMemAllocSize as usize);
+    prop.regsPerBlock = props.maxRegistersPerEU as i32;
+    prop.clockRate = props.coreClockRate as i32;
+    prop.textureAlign = 1;
+
+    Ok(())
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> hipError_t {
     unsafe { hipGetDeviceCount(count) }
+}
+
+#[cfg(feature = "intel")]
+pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> ze_result_t {
+    unsafe {
+        // Initialize Level Zero
+        match zeInit(0) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        // Get driver count
+        let mut driver_count = 0;
+        match zeDriverGet(&mut driver_count, ptr::null_mut()) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        // Get first driver
+        let mut drivers = vec![ptr::null_mut(); driver_count as usize];
+        match zeDriverGet(&mut driver_count, drivers.as_mut_ptr()) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        // Get device count for the first driver
+        let mut device_count = 0;
+        match zeDeviceGet(drivers[0], &mut device_count, ptr::null_mut()) {
+            ze_result_t::ZE_RESULT_SUCCESS => {},
+            e => return e,
+        }
+
+        *count = device_count as ::core::ffi::c_int;
+        ze_result_t::ZE_RESULT_SUCCESS
+    }
 }
 
 fn clamp_usize(x: usize) -> i32 {
     usize::min(x, i32::MAX as usize) as i32
 }
 
+#[cfg(feature = "amd")]
 pub(crate) fn primary_context_retain(
     pctx: &mut CUcontext,
     hip_dev: hipDevice_t,
@@ -440,6 +979,21 @@ pub(crate) fn primary_context_retain(
     Ok(())
 }
 
+#[cfg(feature = "intel")]
+pub(crate) fn primary_context_retain(
+    pctx: &mut CUcontext,
+    ze_dev: ze_device_handle_t,
+) -> Result<(), CUerror> {
+    let (ctx, raw_ctx) = context::get_primary_ze(ze_dev)?;
+    {
+        let mut mutable_ctx = ctx.mutable.lock().map_err(|_| CUerror::UNKNOWN)?;
+        mutable_ctx.ref_count += 1;
+    }
+    *pctx = raw_ctx;
+    Ok(())
+}
+
+#[cfg(feature = "amd")]
 pub(crate) fn primary_context_release(hip_dev: hipDevice_t) -> Result<(), CUerror> {
     let (ctx, _) = context::get_primary(hip_dev)?;
     {
@@ -449,8 +1003,116 @@ pub(crate) fn primary_context_release(hip_dev: hipDevice_t) -> Result<(), CUerro
         }
         mutable_ctx.ref_count -= 1;
         if mutable_ctx.ref_count == 0 {
-            // TODO: drop all children
+            // Clean up all resources owned by this context
+            // When the reference count drops to zero, we should clean up all resources
+            // owned by this context to prevent memory leaks
+            #[cfg(feature = "amd")]
+            {
+                // Clean up streams
+                mutable_ctx.streams.clear();
+
+                // Clean up modules
+                mutable_ctx.modules.clear();
+
+                // Clean up memory allocations
+                for ptr in mutable_ctx.memory.drain() {
+                    unsafe { hipFree(ptr) }.ok();
+                }
+            }
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "intel")]
+pub(crate) fn primary_context_release(ze_dev: ze_device_handle_t) -> Result<(), CUerror> {
+    let (ctx, _) = context::get_primary_ze(ze_dev)?;
+    {
+        let mut mutable_ctx = ctx.mutable.lock().map_err(|_| CUerror::UNKNOWN)?;
+        if mutable_ctx.ref_count == 0 {
+            return Err(CUerror::INVALID_CONTEXT);
+        }
+        mutable_ctx.ref_count -= 1;
+        if mutable_ctx.ref_count == 0 {
+            // Clean up all resources owned by this context
+            // When the reference count drops to zero, we should clean up all resources
+            // owned by this context to prevent memory leaks
+            #[cfg(feature = "intel")]
+            {
+                // Clean up command queues
+                let queues: Vec<_> = mutable_ctx._command_queues.iter().copied().collect();
+                for queue in queues {
+                    let _ = unsafe { zeCommandQueueDestroy(queue) };
+                }
+                mutable_ctx._command_queues.clear();
+
+                // Clean up command lists
+                let lists: Vec<_> = mutable_ctx._command_lists.iter().copied().collect();
+                for list in lists {
+                    let _ = unsafe { zeCommandListDestroy(list) };
+                }
+                mutable_ctx._command_lists.clear();
+
+                // Clean up modules
+                let modules: Vec<_> = mutable_ctx._modules.iter().copied().collect();
+                for module in modules {
+                    let _ = unsafe { zeModuleDestroy(module) };
+                }
+                mutable_ctx._modules.clear();
+
+                // Clean up memory allocations
+                let allocations: Vec<_> = mutable_ctx._allocations.iter().copied().collect();
+                for ptr in allocations {
+                    let _ = unsafe { zeMemFree(ctx.context, ptr) };
+                }
+                mutable_ctx._allocations.clear();
+            }
+        }
+    }
+    Ok(())
+}
+
+// Add trait for converting ze_result_t to CUresult
+#[cfg(feature = "intel")]
+trait ZeResultExt {
+    fn to_cu_result(self) -> CUresult;
+}
+
+#[cfg(feature = "intel")]
+impl ZeResultExt for ze_result_t {
+    fn to_cu_result(self) -> CUresult {
+        match self {
+            ze_result_t::ZE_RESULT_SUCCESS => Ok(()),
+            ze_result_t::ZE_RESULT_ERROR_DEVICE_LOST => Err(CUerror::DEVICE_NOT_LICENSED),
+            ze_result_t::ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY => Err(CUerror::OUT_OF_MEMORY),
+            ze_result_t::ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY => Err(CUerror::OUT_OF_MEMORY),
+            ze_result_t::ZE_RESULT_ERROR_MODULE_BUILD_FAILURE => Err(CUerror::INVALID_PTX),
+            ze_result_t::ZE_RESULT_ERROR_MODULE_LINK_FAILURE => Err(CUerror::INVALID_PTX),
+            ze_result_t::ZE_RESULT_ERROR_DEVICE_UNAVAILABLE => Err(CUerror::NO_DEVICE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_HANDLE => Err(CUerror::INVALID_HANDLE),
+            ze_result_t::ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE => Err(CUerror::IN_USE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_POINTER => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_SIZE => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_SIZE => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE => Err(CUerror::NOT_SUPPORTED),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_SYNCHRONIZATION_OBJECT => Err(CUerror::INVALID_HANDLE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_ENUMERATION => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_ENUMERATION => Err(CUerror::NOT_SUPPORTED),
+            ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_IMAGE_FORMAT => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_NATIVE_BINARY => Err(CUerror::INVALID_PTX),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_GLOBAL_NAME => Err(CUerror::NOT_FOUND),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_KERNEL_NAME => Err(CUerror::NOT_FOUND),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_FUNCTION_NAME => Err(CUerror::NOT_FOUND),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_GROUP_SIZE_DIMENSION => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_GLOBAL_WIDTH_DIMENSION => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_KERNEL_ARGUMENT_INDEX => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_KERNEL_ARGUMENT_SIZE => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_KERNEL_ATTRIBUTE_VALUE => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED => Err(CUerror::INVALID_PTX),
+            ze_result_t::ZE_RESULT_ERROR_INVALID_COMMAND_LIST_TYPE => Err(CUerror::INVALID_VALUE),
+            ze_result_t::ZE_RESULT_ERROR_OVERLAPPING_REGIONS => Err(CUerror::INVALID_VALUE),
+            _ => Err(CUerror::UNKNOWN),
+        }
+    }
 }

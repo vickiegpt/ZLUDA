@@ -6,6 +6,7 @@ use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::mem;
 use std::{ptr, str};
+use std::os::raw::c_void;
 
 macro_rules! test_ptx {
     ($fn_name:ident, $input:expr, $output:expr) => {
@@ -286,7 +287,7 @@ fn run_cuda<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + De
     }
     Ok(result)
 }
-
+#[cfg(feature = "amd")]
 fn run_hip<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Default>(
     name: &CStr,
     module: pass::Module,
@@ -361,3 +362,171 @@ fn run_hip<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Def
     }
     Ok(result)
 }
+#[cfg(feature = "intel")]
+fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Default>(
+    name: &CStr,
+    module: pass::Module,
+    input: &[Input],
+    output: &mut [Output],
+) -> Result<Vec<Output>, ze_runtime_sys::ze_result_t> {
+    use ze_runtime_sys::*;
+    unsafe { zeInit(0) }?;
+    let mut result = vec![0u8.into(); output.len()];
+    
+    unsafe {
+        // Get driver
+        let mut driver_count = 0;
+        zeDriverGet(&mut driver_count, ptr::null_mut())?;
+        let mut drivers = vec![ptr::null_mut(); driver_count as usize];
+        zeDriverGet(&mut driver_count, drivers.as_mut_ptr())?;
+        
+        // Get device
+        let mut device_count = 0;
+        zeDeviceGet(drivers[0], &mut device_count, ptr::null_mut())?;
+        let mut devices = vec![ptr::null_mut(); device_count as usize];
+        zeDeviceGet(drivers[0], &mut device_count, devices.as_mut_ptr())?;
+        
+        // Create context
+        let mut context_desc = ze_context_desc_t {
+            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_CONTEXT_DESC,
+            pNext: ptr::null(),
+            flags: 0,
+        };
+        let mut context = ptr::null_mut();
+        zeContextCreate(drivers[0], &context_desc, &mut context)?;
+        
+        // Create command queue
+        let mut queue_desc = ze_command_queue_desc_t {
+            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
+            pNext: ptr::null(),
+            ordinal: 0,
+            index: 0,
+            flags: 0,
+            mode: ze_command_queue_mode_t::ZE_COMMAND_QUEUE_MODE_DEFAULT,
+            priority: ze_command_queue_priority_t::ZE_COMMAND_QUEUE_PRIORITY_NORMAL,
+        };
+        let mut command_queue = ptr::null_mut();
+        zeCommandQueueCreate(context, devices[0], &queue_desc, &mut command_queue)?;
+        
+        // Create command list
+        let mut cmd_list_desc = ze_command_list_desc_t {
+            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC,
+            pNext: ptr::null(),
+            commandQueueGroupOrdinal: 0,
+            flags: 0,
+        };
+        let mut command_list = ptr::null_mut();
+        zeCommandListCreate(context, devices[0], &cmd_list_desc, &mut command_list)?;
+        
+        // Compile the module
+        let elf_module = comgr::compile_bitcode_intel(
+            "6.0",
+            &*module.llvm_ir,
+            module.linked_bitcode(),
+        )?;
+        
+        // Create module
+        let mut module_desc = ze_module_desc_t {
+            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_MODULE_DESC,
+            pNext: ptr::null(),
+            format: ze_module_format_t::ZE_MODULE_FORMAT_IL_SPIRV,
+            inputSize: elf_module.len(),
+            pInputModule: elf_module.as_ptr() as *const _,
+            pBuildFlags: ptr::null(),
+            pConstants: ptr::null(),
+        };
+        let mut ze_module = ptr::null_mut();
+        let mut log = ptr::null_mut();
+        zeModuleCreate(context, devices[0], &module_desc, &mut ze_module, &mut log)?;
+        
+        // Create kernel
+        let mut kernel_desc = ze_kernel_desc_t {
+            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_DESC,
+            pNext: ptr::null(),
+            flags: 0,
+            pKernelName: name.as_ptr(),
+        };
+        let mut kernel = ptr::null_mut();
+        zeKernelCreate(ze_module, &kernel_desc, &mut kernel)?;
+        
+        // Set kernel group size
+        zeKernelSetGroupSize(kernel, 1, 1, 1)?;
+        
+        // Allocate memory
+        let input_size = input.len() * mem::size_of::<Input>();
+        let output_size = output.len() * mem::size_of::<Output>();
+        
+        let mut mem_desc = ze_device_mem_alloc_desc_t {
+            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC,
+            pNext: ptr::null(),
+            flags: 0,
+            ordinal: 0,
+        };
+        
+        let mut inp_b = ptr::null_mut();
+        let mut out_b = ptr::null_mut();
+        
+        zeMemAllocDevice(context, &mem_desc, input_size, 1, devices[0], &mut inp_b)?;
+        zeMemAllocDevice(context, &mem_desc, output_size, 1, devices[0], &mut out_b)?;
+        
+        // Copy input data to device
+        zeCommandListAppendMemoryCopy(
+            command_list,
+            inp_b,
+            input.as_ptr() as *const _,
+            input_size,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+        )?;
+        
+        // Set kernel arguments
+        zeKernelSetArgumentValue(kernel, 0, mem::size_of::<*mut c_void>(), &inp_b as *const _ as *const c_void)?;
+        zeKernelSetArgumentValue(kernel, 1, mem::size_of::<*mut c_void>(), &out_b as *const _ as *const c_void)?;
+        
+        // Launch kernel
+        let mut launch_args = ze_group_count_t {
+            groupCountX: 1,
+            groupCountY: 1,
+            groupCountZ: 1,
+        };
+        
+        zeCommandListAppendLaunchKernel(
+            command_list,
+            kernel,
+            &launch_args,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+        )?;
+        
+        // Copy output data back to host
+        zeCommandListAppendMemoryCopy(
+            command_list,
+            result.as_mut_ptr() as *mut _,
+            out_b,
+            output_size,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+        )?;
+        
+        // Execute commands
+        zeCommandListClose(command_list)?;
+        zeCommandQueueExecuteCommandLists(command_queue, 1, &command_list, ptr::null_mut())?;
+        zeCommandQueueSynchronize(command_queue, u32::MAX)?;
+        
+        // Cleanup
+        zeMemFree(context, inp_b)?;
+        zeMemFree(context, out_b)?;
+        zeKernelDestroy(kernel)?;
+        zeModuleDestroy(ze_module)?;
+        zeCommandListDestroy(command_list)?;
+        zeCommandQueueDestroy(command_queue)?;
+        zeContextDestroy(context)?;
+    }
+    
+    Ok(result)
+}
+
+
