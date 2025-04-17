@@ -9,31 +9,40 @@ use crate::r#impl::ZeResult;
 #[cfg(feature = "amd")]
 pub(crate) unsafe fn get_attribute(
     data: *mut c_void,
-    attribute: CUpointer_attribute,
-    ptr: CUdeviceptr,
-) -> CUresult {
+    attribute: hipPointer_attribute,
+    ptr: hipDeviceptr_t,
+) -> hipError_t {
     if data == ptr::null_mut() {
-        return CUresult::ErrorInvalidValue;
+        return hipError_t::ErrorInvalidValue;
     }
     match attribute {
         // TODO: implement by getting device ordinal & allocation start,
         // then go through every context for that device
-        CUpointer_attribute::CU_POINTER_ATTRIBUTE_CONTEXT => CUresult::ErrorNotSupported,
-        CUpointer_attribute::CU_POINTER_ATTRIBUTE_MEMORY_TYPE => {
-            let mut cuda_result = CUmemorytype(0);
-            CUpointerGetAttribute(
-                (&mut cuda_result as *mut CUmemorytype).cast::<c_void>(),
+        hipPointer_attribute::HIP_POINTER_ATTRIBUTE_CONTEXT => hipError_t::ErrorNotSupported,
+        hipPointer_attribute::HIP_POINTER_ATTRIBUTE_MEMORY_TYPE => {
+            let mut hip_result = hipMemoryType(0);
+            hipPointerGetAttribute(
+                (&mut hip_result as *mut hipMemoryType).cast::<c_void>(),
                 attribute,
                 ptr,
             )?;
-            let hip_result = memory_type_amd(cuda_result)?;
-            unsafe { *(data.cast()) = hip_result };
+            let cuda_result = memory_type(hip_result)?;
+            unsafe { *(data.cast()) = cuda_result };
             Ok(())
         }
-        _ => unsafe { CUpointerGetAttribute(data, attribute, ptr) },
+        _ => unsafe { hipPointerGetAttribute(data, attribute, ptr) },
     }
 }
-
+#[cfg(feature = "amd")]
+fn memory_type(cu: hipMemoryType) -> Result<CUmemorytype, hipErrorCode_t> {
+    match cu {
+        hipMemoryType::hipMemoryTypeHost => Ok(CUmemorytype::CU_MEMORYTYPE_HOST),
+        hipMemoryType::hipMemoryTypeDevice => Ok(CUmemorytype::CU_MEMORYTYPE_DEVICE),
+        hipMemoryType::hipMemoryTypeArray => Ok(CUmemorytype::CU_MEMORYTYPE_ARRAY),
+        hipMemoryType::hipMemoryTypeUnified => Ok(CUmemorytype::CU_MEMORYTYPE_UNIFIED),
+        _ => Err(hipErrorCode_t::InvalidValue),
+    }
+}
 #[cfg(feature = "intel")]
 pub(crate) unsafe fn get_attribute(
     data: *mut c_void,
@@ -190,7 +199,7 @@ fn memory_type_amd(cu: CUmemorytype) -> Result<CUmemorytype, CUresult> {
         CUmemorytype::CU_MEMORYTYPE_DEVICE => Ok(CUmemorytype::CU_MEMORYTYPE_DEVICE),
         CUmemorytype::CU_MEMORYTYPE_ARRAY => Ok(CUmemorytype::CU_MEMORYTYPE_ARRAY),
         CUmemorytype::CU_MEMORYTYPE_UNIFIED => Ok(CUmemorytype::CU_MEMORYTYPE_UNIFIED),
-        _ => Err(CUresult::ErrorInvalidValue),
+        _ => Err(CUresult::ERROR_ALREADY_ACQUIRED),
     }
 }
 

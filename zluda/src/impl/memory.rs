@@ -1,15 +1,13 @@
-use super::context;
 #[cfg(feature = "intel")]
 use crate::r#impl::ze_to_cuda_result;
 #[cfg(feature = "intel")]
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
-use std::mem;
-use std::ptr;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
-
+use std::ptr;
+use crate::r#impl::context;
 #[cfg(feature = "amd")]
 pub(crate) fn alloc_v2(dptr: *mut hipDeviceptr_t, bytesize: usize) -> hipError_t {
     unsafe { hipMalloc(dptr.cast(), bytesize) }?;
@@ -26,7 +24,7 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
     };
 
     // Allocate device memory using ZE API
-    let mut device_desc = ze_device_mem_alloc_desc_t {
+    let device_desc = ze_device_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC,
         pNext: std::ptr::null_mut(),
         flags: 0,
@@ -218,7 +216,7 @@ pub(crate) fn get_address_range_v2(
 
 #[cfg(feature = "amd")]
 pub(crate) fn set_d32_v2(dst: hipDeviceptr_t, ui: ::core::ffi::c_uint, n: usize) -> hipError_t {
-    unsafe { hipMemsetD32(dst, ui, n) }
+    unsafe { hipMemsetD32(dst, ui.try_into().unwrap(), n) }
 }
 
 #[cfg(feature = "intel")]
@@ -312,7 +310,7 @@ fn get_immediate_command_list(
         flags: 0,
     };
 
-    let mut command_list = ptr::null_mut();
+    let command_list = ptr::null_mut();
     let result = unsafe { zeCommandListCreate(ctx.context, ctx.device, &desc, command_list) };
 
     if result != ze_result_t::ZE_RESULT_SUCCESS {
@@ -345,7 +343,7 @@ fn execute_immediate_command_list(
         priority: ze_command_queue_priority_t::ZE_COMMAND_QUEUE_PRIORITY_NORMAL,
     };
 
-    let mut command_queue = ptr::null_mut();
+    let command_queue = ptr::null_mut();
     let result =
         unsafe { zeCommandQueueCreate(ctx.context, ctx.device, &queue_desc, command_queue) };
 

@@ -1,9 +1,8 @@
 use super::context;
 use super::ZludaObject;
-use super::{Decuda, Encuda};
 use cuda_types::cuda::*;
 use std::os::raw::c_void;
-use std::{ffi::CStr, mem, ptr};
+use std::{ffi::CStr, ptr};
 use ze_runtime_sys::*;
 
 /// SPIR-V module implementation for Intel
@@ -118,7 +117,7 @@ impl SpirvModule {
         }
 
         // Allocate space for function names
-        let mut function_names = Vec::<*mut i8>::with_capacity(count as usize);
+        let function_names = Vec::<*mut i8>::with_capacity(count as usize);
         let result = unsafe {
             zeModuleGetKernelNames(self.module, &mut count, function_names.as_ptr() as *mut _)
         };
@@ -144,7 +143,7 @@ impl SpirvModule {
             };
 
             // Create the kernel
-            let mut kernel = ptr::null_mut();
+            let kernel = ptr::null_mut();
             let result = unsafe { zeKernelCreate(self.module, &kernel_desc, unsafe { *kernel }) };
 
             if result != ze_result_t::ZE_RESULT_SUCCESS {
@@ -253,7 +252,7 @@ pub(crate) fn load_data_impl(
     };
 
     // Create module
-    let mut ze_module = ptr::null_mut();
+    let ze_module = ptr::null_mut();
     let mut build_log = ptr::null_mut();
 
     let result =
@@ -330,7 +329,7 @@ pub(crate) fn get_function(
     }
 
     // Create new kernel
-    let mut kernel: *mut ze_kernel_handle_t = ptr::null_mut();
+    let kernel: *mut ze_kernel_handle_t = ptr::null_mut();
     let kernel_desc = ze_kernel_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_DESC,
         pNext: ptr::null(),
@@ -350,7 +349,7 @@ pub(crate) fn get_function(
             };
 
             // Store the kernel in the module's function list
-            let mut module_mut = hmod as *const Module as *mut Module;
+            let module_mut = hmod as *const Module as *mut Module;
             unsafe {
                 (*module_mut)
                     .functions

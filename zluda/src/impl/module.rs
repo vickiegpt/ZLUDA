@@ -1,14 +1,10 @@
 #[cfg(feature = "intel")]
 use super::ze_module;
 use super::ZludaObject;
-#[cfg(feature = "intel")]
-use super::{Decuda, Encuda};
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
-#[cfg(feature = "intel")]
-use std::os::raw::c_void;
-use std::{ffi::CStr, mem, ptr};
+use std::{ffi::CStr, ptr};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
 #[cfg(feature = "amd")]
@@ -32,7 +28,7 @@ impl ZludaObject for Module {
     type CudaHandle = CUmodule;
 
     fn drop_checked(&mut self) -> CUresult {
-        unsafe { hipModuleUnload(self.base) }?;
+        unsafe { hipModuleUnload(self.base).unwrap() };
         Ok(())
     }
 }
@@ -68,19 +64,19 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         .to_str()
         .map_err(|_| CUerror::INVALID_VALUE)?;
     let ast = ptx_parser::parse_module_checked(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
-    let llvm_module = ptx::to_llvm_module(&ast).map_err(|_| CUerror::UNKNOWN)?;
+    let llvm_module = ptx::to_llvm_module(ast).map_err(|_| CUerror::UNKNOWN)?;
     let mut dev = 0;
-    unsafe { hipCtxGetDevice(&mut dev) }?;
-    let mut props = unsafe { mem::zeroed() };
-    unsafe { hipGetDevicePropertiesR0600(&mut props, dev) }?;
+    unsafe { hipCtxGetDevice(&mut dev).unwrap() };
+    let mut props = unsafe { std::mem::zeroed() };
+    unsafe { hipGetDevicePropertiesR0600(&mut props, dev).unwrap() };
     let elf_module = comgr::compile_bitcode(
         unsafe { CStr::from_ptr(props.gcnArchName.as_ptr()) },
         &*llvm_module.llvm_ir,
         llvm_module.linked_bitcode(),
     )
     .map_err(|_| CUerror::UNKNOWN)?;
-    let mut hip_module = unsafe { mem::zeroed() };
-    unsafe { hipModuleLoadData(&mut hip_module, elf_module.as_ptr().cast()) }?;
+    let mut hip_module = unsafe { std::mem::zeroed() };
+    unsafe { hipModuleLoadData(&mut hip_module, elf_module.as_ptr().cast()).unwrap() };
     *module = Module { base: hip_module }.wrap();
     Ok(())
 }
@@ -122,7 +118,7 @@ pub(crate) fn load_data_impl(
     };
 
     // Create module
-    let mut ze_module = ptr::null_mut();
+    let ze_module = ptr::null_mut();
     let mut build_log = ptr::null_mut();
 
     let result =
@@ -147,7 +143,8 @@ pub(crate) fn load_data_impl(
 #[cfg(feature = "intel")]
 fn ptx_to_spirv(spirv_module: &ze_module::SpirvModule) -> Result<Vec<u8>, CUerror> {
     // Convert PTX AST to LLVM IR
-    let llvm_module = ptx::to_llvm_module(spirv_module.ast.clone()).map_err(|_| CUerror::UNKNOWN)?;
+    let llvm_module =
+        ptx::to_llvm_module(spirv_module.ast.clone()).map_err(|_| CUerror::UNKNOWN)?;
 
     // For Intel, we need to use the LLVM SPIR-V target
     // This is a placeholder implementation that assumes
@@ -216,7 +213,7 @@ pub(crate) fn get_function(
     }
 
     // Create new kernel
-    let mut kernel = ptr::null_mut();
+    let kernel = ptr::null_mut();
     let kernel_desc = ze_kernel_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_DESC,
         pNext: ptr::null(),
@@ -236,7 +233,7 @@ pub(crate) fn get_function(
             };
 
             // Store the kernel in the module's function list
-            let mut module_mut = hmod as *const Module as *mut Module;
+            let module_mut = hmod as *const Module as *mut Module;
             unsafe {
                 (*module_mut)
                     .functions

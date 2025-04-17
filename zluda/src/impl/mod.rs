@@ -2,6 +2,7 @@ use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
 use std::mem::{self, ManuallyDrop, MaybeUninit};
+#[cfg(feature = "intel")]
 use ze_device::ze_device_limit_t;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
@@ -157,7 +158,7 @@ impl<'a> FromCuda<'a, CUfunction_attribute> for ze_kernel_desc_t {
     fn from_cuda(attr: &'a CUfunction_attribute) -> Result<Self, CUerror> {
         // Create a properly initialized ze_kernel_desc_t
         // This needs to be customized based on how attributes should map
-        let mut desc = ze_kernel_desc_t::default();
+        let desc = ze_kernel_desc_t::default();
 
         // Set appropriate fields based on the attribute
         // For example:
@@ -192,7 +193,7 @@ impl<'a> FromCuda<'a, *mut CUfunction_attribute> for *mut ze_kernel_desc_t {
 #[cfg(feature = "intel")]
 impl<'a> FromCuda<'a, CUfunction_attribute_enum> for _ze_kernel_properties_t {
     fn from_cuda(attr: &'a CUfunction_attribute_enum) -> Result<Self, CUerror> {
-        let mut props = _ze_kernel_properties_t::default();
+        let props = _ze_kernel_properties_t::default();
 
         // Map CUDA function attributes to Level Zero kernel properties
         match *attr {
@@ -295,6 +296,7 @@ impl<'a> FromCuda<'a, CUdeviceptr_v2> for () {
 }
 
 from_cuda_object!(module::Module);
+from_cuda_object!(context::Context);
 
 #[cfg(feature = "amd")]
 impl<'a> FromCuda<'a, CUlimit> for hipLimit_t {
@@ -501,21 +503,4 @@ impl From<ZeResult> for Result<(), CUerror> {
 #[cfg(feature = "intel")]
 pub fn ze_result_to_result(result: ze_result_t) -> Result<(), CUerror> {
     ZeResult(result).into()
-}
-
-// Add implementation for CUcontext from CUcontext
-impl<'a> FromCuda<'a, CUcontext> for CUcontext {
-    fn from_cuda(handle: &'a CUcontext) -> Result<Self, CUerror> {
-        Ok(*handle)
-    }
-}
-
-// Add implementation for &mut CUcontext from *mut CUcontext
-impl<'a> FromCuda<'a, *mut CUcontext> for &'a mut CUcontext {
-    fn from_cuda(handle: &'a *mut CUcontext) -> Result<Self, CUerror> {
-        match unsafe { handle.as_mut() } {
-            Some(handle) => Ok(handle),
-            None => Err(CUerror::INVALID_VALUE),
-        }
-    }
 }

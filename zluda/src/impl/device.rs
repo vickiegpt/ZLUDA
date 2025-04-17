@@ -2,7 +2,6 @@ use super::context;
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
-use std::ffi::c_char;
 use std::{mem, ptr};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
@@ -16,6 +15,19 @@ pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, _dev: hipDevi
     *major = COMPUTE_CAPABILITY_MAJOR;
     *minor = COMPUTE_CAPABILITY_MINOR;
     Ok(())
+}
+#[cfg(feature = "amd")]
+macro_rules! remap_attribute {
+    ($attrib:expr => $([ $($word:expr)* ]),*,) => {
+        match $attrib {
+            $(
+                paste::paste! { CUdevice_attribute:: [< CU_DEVICE_ATTRIBUTE $(_ $word:upper)* >] } => {
+                    paste::paste! { hipDeviceAttribute_t:: [< hipDeviceAttribute $($word:camel)* >] }
+                }
+            )*
+            _ => return Err(hipErrorCode_t::NotSupported)
+        }
+    }
 }
 
 #[cfg(feature = "intel")]
@@ -794,7 +806,7 @@ pub(crate) fn get_name(
     len: ::core::ffi::c_int,
     dev: hipDevice_t,
 ) -> CUresult {
-    unsafe { hipDeviceGetName(name, len, dev) }?;
+    unsafe { hipDeviceGetName(name, len, dev).unwrap() };
     let len = len as usize;
     let buffer = unsafe { std::slice::from_raw_parts(name, len) };
     let first_zero = buffer.iter().position(|c| *c == 0);
@@ -1006,7 +1018,7 @@ pub(crate) fn primary_context_release(hip_dev: hipDevice_t) -> Result<(), CUerro
             // Clean up all resources owned by this context
             // When the reference count drops to zero, we should clean up all resources
             // owned by this context to prevent memory leaks
-            #[cfg(feature = "amd")]
+            #[cfg(feature = "intel")]
             {
                 // Clean up streams
                 mutable_ctx.streams.clear();

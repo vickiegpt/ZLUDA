@@ -1,18 +1,17 @@
 #![feature(str_from_raw_parts)]
 
 pub(crate) mod r#impl;
-
 // Import necessary for FromCuda
 use crate::r#impl::FromCuda;
 // Import std::ptr for null_mut
 use std::ptr;
 // Import Ze types
+#[cfg(feature = "intel")]
 use ze_runtime_sys::ze_device_handle_t;
 // Import CUerror for Result
-use cuda_types::cuda::{CUerror, CUresult};
+use cuda_types::cuda::CUerror;
 // Define Result type to match FromCuda error return type
 type Result<T> = std::result::Result<T, CUerror>;
-use cuda_types::cuda::CUresultConsts;
 
 // Add this function to get device handle by index
 #[cfg(feature = "intel")]
@@ -52,7 +51,7 @@ macro_rules! implemented {
             #[allow(improper_ctypes)]
             #[allow(improper_ctypes_definitions)]
             pub unsafe extern $abi fn $fn_name ( $( $arg_id : $arg_type),* ) -> $ret_type {
-                cuda_base::cuda_normalize_fn!( crate::r#impl::$fn_name ) ($(crate::r#impl::FromCuda::from_cuda(&$arg_id)?),*)?;
+                cuda_base::cuda_normalize_fn!( crate::r#impl::$fn_name ) ($(crate::r#impl::FromCuda::from_cuda(&$arg_id).unwrap()),*).unwrap();
                 Ok(())
             }
         )*
@@ -105,7 +104,7 @@ macro_rules! implemented_in_function {
             #[allow(improper_ctypes)]
             #[allow(improper_ctypes_definitions)]
             pub unsafe extern $abi fn $fn_name ( $( $arg_id : $arg_type),* ) -> $ret_type {
-                cuda_base::cuda_normalize_fn!( crate::r#impl::function::$fn_name ) ($(crate::r#impl::FromCuda::from_cuda(&$arg_id)?),*)?;
+                cuda_base::cuda_normalize_fn!( crate::r#impl::function::$fn_name ) ($(crate::r#impl::FromCuda::from_cuda(&$arg_id).unwrap()),*).unwrap();
                 Ok(())
             }
         )*

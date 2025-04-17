@@ -4,13 +4,13 @@ use hip_runtime_sys::*;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
 use std::{
-    ffi::{CStr, CString},
-    mem, slice,
+    ffi::CString,
     sync::OnceLock,
-    cell::RefCell,
-    collections::HashMap,
-    ptr::NonNull,
 };
+
+use std::ffi::CStr;
+
+use std::{cell::RefCell, collections::HashMap, ptr::NonNull};
 
 use crate::r#impl::context;
 
@@ -74,17 +74,17 @@ pub(crate) fn device(dev: i32) -> Result<&'static Device, CUerror> {
 pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
     static GLOBAL_STATE: OnceLock<Result<GlobalState, CUerror>> = OnceLock::new();
     fn cast_slice<'a>(bytes: &'a [i8]) -> &'a [u8] {
-        unsafe { slice::from_raw_parts(bytes.as_ptr().cast(), bytes.len()) }
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast(), bytes.len()) }
     }
     GLOBAL_STATE
         .get_or_init(|| {
             let mut device_count = 0;
-            unsafe { hipGetDeviceCount(&mut device_count) }?;
+            unsafe { hipGetDeviceCount(&mut device_count).unwrap() };
             Ok(GlobalState {
                 devices: (0..device_count)
                     .map(|i| {
-                        let mut props = unsafe { mem::zeroed() };
-                        unsafe { hipGetDevicePropertiesR0600(&mut props, i) }?;
+                        let mut props = unsafe { std::mem::zeroed() };
+                        unsafe { hipGetDevicePropertiesR0600(&mut props, i).unwrap() };
                         Ok::<_, CUerror>(Device {
                             _comgr_isa: CStr::from_bytes_until_nul(cast_slice(
                                 &props.gcnArchName[..],
@@ -154,7 +154,7 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
                 };
                 
                 // Get device properties
-                let mut props: ze_device_properties_t = unsafe { mem::zeroed() };
+                let mut props: ze_device_properties_t = unsafe { std::mem::zeroed() };
                 props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
                 
                 unsafe {
@@ -206,7 +206,7 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
 
 #[cfg(feature = "amd")]
 pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
-    unsafe { hipInit(flags) }?;
+    unsafe { hipInit(flags).unwrap() };
     global_state()?;
     Ok(())
 }

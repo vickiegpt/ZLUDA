@@ -2,8 +2,8 @@
 use hip_runtime_sys::*;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
-use std::ptr;
 
+use std::ptr;
 #[cfg(feature = "amd")]
 pub(crate) fn get_attribute(
     pi: &mut i32,
@@ -223,7 +223,7 @@ unsafe fn get_or_create_command_list_for_stream(stream: ze_command_queue_handle_
     let device = get_device_from_stream(stream);
     let context = get_context_from_stream(stream);
     
-    let mut desc = ze_command_list_desc_t {
+    let desc = ze_command_list_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC,
         pNext: ptr::null(),
         commandQueueGroupOrdinal: 0, // Default queue group

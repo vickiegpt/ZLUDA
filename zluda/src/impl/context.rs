@@ -3,13 +3,12 @@ use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
 use rustc_hash::FxHashSet;
-use std::ffi::c_uint;
 #[cfg(feature = "intel")]
 use std::os::raw::c_void;
 use std::{cell::RefCell, ptr, sync::Mutex};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
-
+use std::ffi::c_uint;
 // 添加Result转换特性，用于ze_result_t到CUerror的转换
 #[cfg(feature = "intel")]
 trait ResultExt {
@@ -38,6 +37,20 @@ thread_local! {
 pub(crate) struct Context {
     pub(crate) device: hipDevice_t,
     pub(crate) mutable: Mutex<OwnedByContext>,
+}
+#[cfg(feature = "amd")]
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device,
+            mutable: Mutex::new(OwnedByContext {
+                ref_count: 0,
+                _memory: FxHashSet::default(),
+                _streams: FxHashSet::default(),
+                _modules: FxHashSet::default(),
+            }),
+        }
+    }
 }
 #[cfg(feature = "amd")]
 pub(crate) struct OwnedByContext {
@@ -165,7 +178,7 @@ pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
             None
         })
     } else {
-        let ctx: &Context = FromCuda::from_cuda(&raw_ctx)?;
+        let ctx: &Context = FromCuda::from_cuda(&raw_ctx).unwrap();
         let device = ctx.device;
         CONTEXT_STACK.with(move |stack| {
             let mut stack = stack.borrow_mut();
@@ -180,7 +193,7 @@ pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
     };
 
     if let Some(dev) = new_device {
-        unsafe { hipSetDevice(dev)? };
+        unsafe { hipSetDevice(dev).unwrap() };
     }
 
     Ok(())
@@ -208,10 +221,10 @@ pub(crate) fn push(ctx: CUcontext, device: hipDevice_t) {
 }
 
 #[cfg(feature = "amd")]
-pub(crate) fn get_device_properties(device: hipDevice_t) -> Result<hipDeviceProp_t, CUerror> {
+pub(crate) fn get_device_properties(device: hipDevice_t) -> Result<hipDeviceArch_t, CUerror> {
     let mut props = unsafe { std::mem::zeroed() };
-    unsafe { hipGetDeviceProperties(&mut props, device) }?;
-    Ok(props)
+    unsafe { hipGetDevicePropertiesR0600(&mut props, device).unwrap() };
+    Ok(props.arch)
 }
 // Intel Level Zero implementations
 #[cfg(feature = "intel")]
@@ -464,29 +477,6 @@ pub(crate) fn from_cuda_to(ctx: &CUcontext) -> Result<&Context, CUerror> {
 }
 
 #[cfg(feature = "intel")]
-impl<'a> FromCuda<'a, CUcontext> for &'a Context {
-    fn from_cuda(cuda_handle: &'a CUcontext) -> Result<&'a Context, CUerror> {
-        if cuda_handle.0.is_null() {
-            return Err(CUerror::INVALID_CONTEXT);
-        }
-
-        let raw_handle = cuda_handle.0 as *const u8;
-        let magic_cookie_offset = std::mem::size_of::<usize>();
-        let cookie = unsafe { *(raw_handle.add(magic_cookie_offset) as *const usize) };
-
-        if cookie != <Context as ZludaObject>::COOKIE {
-            return Err(CUerror::INVALID_HANDLE);
-        }
-
-        // Cast the handle to our internal type, using the appropriate offset
-        let context =
-            unsafe { &*(raw_handle.add(std::mem::size_of::<usize>() * 2) as *const Context) };
-
-        Ok(context)
-    }
-}
-
-#[cfg(feature = "intel")]
 pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
     let new_device = if raw_ctx.0 == ptr::null_mut() {
         CONTEXT_STACK.with(|stack| {
@@ -546,7 +536,7 @@ pub(crate) fn ze_malloc(
     alignment: usize,
     ze_ctx: &Context,
 ) -> Result<*mut c_void, CUerror> {
-    let mut device_desc = ze_device_mem_alloc_desc_t {
+    let device_desc = ze_device_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC,
         pNext: ptr::null(),
         flags: 0,
@@ -578,7 +568,7 @@ pub(crate) fn ze_malloc_host(
     alignment: usize,
     ze_ctx: &Context,
 ) -> Result<*mut c_void, CUerror> {
-    let mut host_desc = ze_host_mem_alloc_desc_t {
+    let host_desc = ze_host_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC,
         pNext: ptr::null(),
         flags: 0,
@@ -601,14 +591,14 @@ pub(crate) fn ze_malloc_shared(
     alignment: usize,
     ze_ctx: &Context,
 ) -> Result<*mut c_void, CUerror> {
-    let mut device_desc = ze_device_mem_alloc_desc_t {
+    let device_desc = ze_device_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC,
         pNext: ptr::null(),
         flags: 0,
         ordinal: 0,
     };
 
-    let mut host_desc = ze_host_mem_alloc_desc_t {
+    let host_desc = ze_host_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC,
         pNext: ptr::null(),
         flags: 0,
