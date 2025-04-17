@@ -1,3 +1,5 @@
+#![feature(str_from_raw_parts)]
+
 pub(crate) mod r#impl;
 
 // Import necessary for FromCuda
@@ -7,10 +9,18 @@ use std::ptr;
 // Import Ze types
 use ze_runtime_sys::ze_device_handle_t;
 // Import CUerror for Result
-use cuda_types::cuda::CUerror;
-
+use cuda_types::cuda::{CUerror, CUresult};
 // Define Result type to match FromCuda error return type
 type Result<T> = std::result::Result<T, CUerror>;
+use cuda_types::cuda::CUresultConsts;
+
+// Add this function to get device handle by index
+#[cfg(feature = "intel")]
+fn get_device_handle_by_index(index: usize) -> Result<ze_device_handle_t> {
+    // Implementation depends on how you access devices in your system
+    // This is a placeholder - replace with actual implementation
+    Ok(unsafe { std::mem::zeroed() })
+}
 
 // Fix implementation of FromCuda for ze_device_handle_t
 #[cfg(feature = "intel")]
@@ -64,37 +74,27 @@ macro_rules! implemented {
 }
 #[cfg(feature = "intel")]
 impl<'a> FromCuda<'a, i32> for ze_device_handle_t {
-    // type Error = CUresult; // 或者您使用的任何错误类型
-
     fn from_cuda(cuda_value: &'a i32) -> Result<Self> {
-        // 这里实现从i32到ze_device_handle_t的转换逻辑
-        // 例如：
+        // Logic to convert i32 to ze_device_handle_t
         if *cuda_value < 0 {
-            return Err(CUresult::CUDA_ERROR_INVALID_VALUE); // 使用适当的错误
+            return Err(CUerror::INVALID_VALUE); // Return an error, not CUresult
         }
 
-        // 根据索引获取设备句柄
-        let device_handle = unsafe {
-            // 假设有一个函数可以根据索引获取设备句柄
-            get_device_handle_by_index(*cuda_value as usize)?
-        };
-
+        // Get device handle by index
+        let device_handle = get_device_handle_by_index(*cuda_value as usize)?;
         Ok(device_handle)
     }
 }
 
 #[cfg(feature = "intel")]
 impl<'a> FromCuda<'a, cuda_types::cuda::CUdeviceptr_v2> for cuda_types::cuda::CUdeviceptr_v2 {
-    // type Error = CUresult; // 或者您使用的任何错误类型
+    fn from_cuda(cuda_value: &'a cuda_types::cuda::CUdeviceptr_v2) -> Result<Self> {
+        // Logic to validate CUdeviceptr_v2
+        if unsafe { cuda_value.0 as i64 } < 0 {
+            return Err(CUerror::INVALID_HANDLE); // Return an error, not CUresult
+        }
 
-    fn from_cuda(cuda_value: cuda_types::cuda::CUdeviceptr_v2) -> Result<Self> {
-        // 这里实现从i32到ze_device_handle_t的转换逻辑
-        // 例如：
-        if unsafe { *cuda_value.0 as i32 } < 0 {
-            return Err(CUresult::CUDA_ERROR_INVALID_VALUE); // 使用适当的错误
-        };
-
-        Ok(cuda_value)
+        Ok(*cuda_value)
     }
 }
 #[cfg(feature = "amd")]

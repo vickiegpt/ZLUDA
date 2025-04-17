@@ -320,7 +320,7 @@ fn get_immediate_command_list(
     }
 
     unsafe {
-        let handle = ze_command_list_handle_t(*command_list);
+        let handle = ze_command_list_handle_t((*command_list).0);
 
         // Track the command list in the context
         ctx.add_command_list(handle);
@@ -355,7 +355,7 @@ fn execute_immediate_command_list(
         return CUresult::ERROR_INVALID_VALUE;
     }
 
-    let queue_handle = ze_command_queue_handle_t(unsafe { *command_queue });
+    let queue_handle = ze_command_queue_handle_t(unsafe { (*command_queue).0 });
 
     // Track the command queue in the context
     ctx.add_command_queue(queue_handle);

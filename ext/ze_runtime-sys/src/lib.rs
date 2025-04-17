@@ -725,7 +725,7 @@ impl _ze_structure_type_t {
         _ze_structure_type_t(2147483647);
 }
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct _ze_structure_type_t(pub ::core::ffi::c_uint);
 pub use self::_ze_structure_type_t as ze_structure_type_t;
 pub type ze_external_memory_type_flags_t = u32;
@@ -875,6 +875,26 @@ pub type ze_module_constants_t = _ze_module_constants_t;
 pub type ze_module_desc_t = _ze_module_desc_t;
 pub type ze_module_properties_t = _ze_module_properties_t;
 pub type ze_kernel_desc_t = _ze_kernel_desc_t;
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct _ze_kernel_desc_t {
+    pub stype: ze_structure_type_t,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: ze_kernel_flags_t,
+    pub pKernelName: *const ::core::ffi::c_char,
+}
+
+impl Default for _ze_kernel_desc_t {
+    fn default() -> Self {
+        Self {
+            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_DESC,
+            pNext: ::std::ptr::null(),
+            flags: 0,
+            pKernelName: ::std::ptr::null(),
+        }
+    }
+}
+
 pub type ze_kernel_uuid_t = _ze_kernel_uuid_t;
 pub type ze_kernel_properties_t = _ze_kernel_properties_t;
 pub type ze_kernel_preferred_group_size_properties_t = _ze_kernel_preferred_group_size_properties_t;
@@ -3138,14 +3158,7 @@ impl _ze_kernel_flag_t {
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct _ze_kernel_flag_t(pub ::core::ffi::c_uint);
 pub use self::_ze_kernel_flag_t as ze_kernel_flag_t;
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-pub struct _ze_kernel_desc_t {
-    pub stype: ze_structure_type_t,
-    pub pNext: *const ::core::ffi::c_void,
-    pub flags: ze_kernel_flags_t,
-    pub pKernelName: *const ::core::ffi::c_char,
-}
+
 unsafe extern "C" {
     #[must_use]
     pub fn zeKernelCreate(
@@ -3207,10 +3220,6 @@ pub type ze_kernel_indirect_access_flags_t = u32;
 impl _ze_kernel_indirect_access_flag_t {
     pub const ZE_KERNEL_INDIRECT_ACCESS_FLAG_HOST: _ze_kernel_indirect_access_flag_t =
         _ze_kernel_indirect_access_flag_t(1);
-}
-impl _ze_kernel_indirect_access_flag_t {
-    pub const ZE_KERNEL_INDIRECT_ACCESS_FLAG_DEVICE: _ze_kernel_indirect_access_flag_t =
-        _ze_kernel_indirect_access_flag_t(2);
 }
 impl _ze_kernel_indirect_access_flag_t {
     pub const ZE_KERNEL_INDIRECT_ACCESS_FLAG_SHARED: _ze_kernel_indirect_access_flag_t =
@@ -3291,6 +3300,29 @@ pub struct _ze_kernel_properties_t {
     pub privateMemSize: u32,
     pub spillMemSize: u32,
     pub uuid: ze_kernel_uuid_t,
+}
+impl Default for _ze_kernel_properties_t {
+    fn default() -> Self {
+        Self {
+            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES,
+            pNext: ::std::ptr::null_mut(),
+            numKernelArgs: 0,
+            requiredGroupSizeX: 0,
+            requiredGroupSizeY: 0,
+            requiredGroupSizeZ: 0,
+            requiredNumSubGroups: 0,
+            requiredSubgroupSize: 0,
+            maxSubgroupSize: 0,
+            maxNumSubgroups: 0,
+            localMemSize: 0,
+            privateMemSize: 0,
+            spillMemSize: 0,
+            uuid: ze_kernel_uuid_t {
+                kid: [0; 16],
+                mid: [0; 16],
+            },
+        }
+    }
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -3860,10 +3892,6 @@ pub struct _ze_driver_ddi_handles_ext_properties_t {
     pub flags: ze_driver_ddi_handle_ext_flags_t,
 }
 impl _ze_external_semaphore_ext_version_t {
-    pub const ZE_EXTERNAL_SEMAPHORE_EXT_VERSION_1_0: _ze_external_semaphore_ext_version_t =
-        _ze_external_semaphore_ext_version_t(65536);
-}
-impl _ze_external_semaphore_ext_version_t {
     pub const ZE_EXTERNAL_SEMAPHORE_EXT_VERSION_CURRENT: _ze_external_semaphore_ext_version_t =
         _ze_external_semaphore_ext_version_t(65536);
 }
@@ -3885,10 +3913,6 @@ pub type ze_external_semaphore_ext_flags_t = u32;
 impl _ze_external_semaphore_ext_flag_t {
     pub const ZE_EXTERNAL_SEMAPHORE_EXT_FLAG_OPAQUE_FD: _ze_external_semaphore_ext_flag_t =
         _ze_external_semaphore_ext_flag_t(1);
-}
-impl _ze_external_semaphore_ext_flag_t {
-    pub const ZE_EXTERNAL_SEMAPHORE_EXT_FLAG_OPAQUE_WIN32: _ze_external_semaphore_ext_flag_t =
-        _ze_external_semaphore_ext_flag_t(2);
 }
 impl _ze_external_semaphore_ext_flag_t {
     pub const ZE_EXTERNAL_SEMAPHORE_EXT_FLAG_OPAQUE_WIN32_KMT: _ze_external_semaphore_ext_flag_t =
@@ -5161,10 +5185,6 @@ unsafe extern "C" {
     ) -> ze_result_t;
 }
 impl _ze_rtas_builder_exp_version_t {
-    pub const ZE_RTAS_BUILDER_EXP_VERSION_1_0: _ze_rtas_builder_exp_version_t =
-        _ze_rtas_builder_exp_version_t(65536);
-}
-impl _ze_rtas_builder_exp_version_t {
     pub const ZE_RTAS_BUILDER_EXP_VERSION_CURRENT: _ze_rtas_builder_exp_version_t =
         _ze_rtas_builder_exp_version_t(65536);
 }
@@ -6044,7 +6064,7 @@ pub struct _ze_driver_get_params_t {
 }
 pub type ze_driver_get_params_t = _ze_driver_get_params_t;
 pub type ze_pfnDriverGetCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_driver_get_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6059,7 +6079,7 @@ pub struct _ze_driver_get_api_version_params_t {
 }
 pub type ze_driver_get_api_version_params_t = _ze_driver_get_api_version_params_t;
 pub type ze_pfnDriverGetApiVersionCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_driver_get_api_version_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6074,7 +6094,7 @@ pub struct _ze_driver_get_properties_params_t {
 }
 pub type ze_driver_get_properties_params_t = _ze_driver_get_properties_params_t;
 pub type ze_pfnDriverGetPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_driver_get_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6089,7 +6109,7 @@ pub struct _ze_driver_get_ipc_properties_params_t {
 }
 pub type ze_driver_get_ipc_properties_params_t = _ze_driver_get_ipc_properties_params_t;
 pub type ze_pfnDriverGetIpcPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_driver_get_ipc_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6105,7 +6125,7 @@ pub struct _ze_driver_get_extension_properties_params_t {
 }
 pub type ze_driver_get_extension_properties_params_t = _ze_driver_get_extension_properties_params_t;
 pub type ze_pfnDriverGetExtensionPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_driver_get_extension_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6131,7 +6151,7 @@ pub struct _ze_device_get_params_t {
 }
 pub type ze_device_get_params_t = _ze_device_get_params_t;
 pub type ze_pfnDeviceGetCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6147,7 +6167,7 @@ pub struct _ze_device_get_sub_devices_params_t {
 }
 pub type ze_device_get_sub_devices_params_t = _ze_device_get_sub_devices_params_t;
 pub type ze_pfnDeviceGetSubDevicesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_sub_devices_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6162,7 +6182,7 @@ pub struct _ze_device_get_properties_params_t {
 }
 pub type ze_device_get_properties_params_t = _ze_device_get_properties_params_t;
 pub type ze_pfnDeviceGetPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6177,7 +6197,7 @@ pub struct _ze_device_get_compute_properties_params_t {
 }
 pub type ze_device_get_compute_properties_params_t = _ze_device_get_compute_properties_params_t;
 pub type ze_pfnDeviceGetComputePropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_compute_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6192,7 +6212,7 @@ pub struct _ze_device_get_module_properties_params_t {
 }
 pub type ze_device_get_module_properties_params_t = _ze_device_get_module_properties_params_t;
 pub type ze_pfnDeviceGetModulePropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_module_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6209,7 +6229,7 @@ pub struct _ze_device_get_command_queue_group_properties_params_t {
 pub type ze_device_get_command_queue_group_properties_params_t =
     _ze_device_get_command_queue_group_properties_params_t;
 pub type ze_pfnDeviceGetCommandQueueGroupPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_command_queue_group_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6225,7 +6245,7 @@ pub struct _ze_device_get_memory_properties_params_t {
 }
 pub type ze_device_get_memory_properties_params_t = _ze_device_get_memory_properties_params_t;
 pub type ze_pfnDeviceGetMemoryPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_memory_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6241,7 +6261,7 @@ pub struct _ze_device_get_memory_access_properties_params_t {
 pub type ze_device_get_memory_access_properties_params_t =
     _ze_device_get_memory_access_properties_params_t;
 pub type ze_pfnDeviceGetMemoryAccessPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_memory_access_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6257,7 +6277,7 @@ pub struct _ze_device_get_cache_properties_params_t {
 }
 pub type ze_device_get_cache_properties_params_t = _ze_device_get_cache_properties_params_t;
 pub type ze_pfnDeviceGetCachePropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_cache_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6272,7 +6292,7 @@ pub struct _ze_device_get_image_properties_params_t {
 }
 pub type ze_device_get_image_properties_params_t = _ze_device_get_image_properties_params_t;
 pub type ze_pfnDeviceGetImagePropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_image_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6288,7 +6308,7 @@ pub struct _ze_device_get_external_memory_properties_params_t {
 pub type ze_device_get_external_memory_properties_params_t =
     _ze_device_get_external_memory_properties_params_t;
 pub type ze_pfnDeviceGetExternalMemoryPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_external_memory_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6304,7 +6324,7 @@ pub struct _ze_device_get_p2_p_properties_params_t {
 }
 pub type ze_device_get_p2_p_properties_params_t = _ze_device_get_p2_p_properties_params_t;
 pub type ze_pfnDeviceGetP2PPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_p2_p_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6320,7 +6340,7 @@ pub struct _ze_device_can_access_peer_params_t {
 }
 pub type ze_device_can_access_peer_params_t = _ze_device_can_access_peer_params_t;
 pub type ze_pfnDeviceCanAccessPeerCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_can_access_peer_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6334,7 +6354,7 @@ pub struct _ze_device_get_status_params_t {
 }
 pub type ze_device_get_status_params_t = _ze_device_get_status_params_t;
 pub type ze_pfnDeviceGetStatusCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_device_get_status_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6369,7 +6389,7 @@ pub struct _ze_context_create_params_t {
 }
 pub type ze_context_create_params_t = _ze_context_create_params_t;
 pub type ze_pfnContextCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_context_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6383,7 +6403,7 @@ pub struct _ze_context_destroy_params_t {
 }
 pub type ze_context_destroy_params_t = _ze_context_destroy_params_t;
 pub type ze_pfnContextDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_context_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6397,7 +6417,7 @@ pub struct _ze_context_get_status_params_t {
 }
 pub type ze_context_get_status_params_t = _ze_context_get_status_params_t;
 pub type ze_pfnContextGetStatusCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_context_get_status_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6412,7 +6432,7 @@ pub struct _ze_context_system_barrier_params_t {
 }
 pub type ze_context_system_barrier_params_t = _ze_context_system_barrier_params_t;
 pub type ze_pfnContextSystemBarrierCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_context_system_barrier_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6429,7 +6449,7 @@ pub struct _ze_context_make_memory_resident_params_t {
 }
 pub type ze_context_make_memory_resident_params_t = _ze_context_make_memory_resident_params_t;
 pub type ze_pfnContextMakeMemoryResidentCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_context_make_memory_resident_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6446,7 +6466,7 @@ pub struct _ze_context_evict_memory_params_t {
 }
 pub type ze_context_evict_memory_params_t = _ze_context_evict_memory_params_t;
 pub type ze_pfnContextEvictMemoryCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_context_evict_memory_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6462,7 +6482,7 @@ pub struct _ze_context_make_image_resident_params_t {
 }
 pub type ze_context_make_image_resident_params_t = _ze_context_make_image_resident_params_t;
 pub type ze_pfnContextMakeImageResidentCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_context_make_image_resident_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6478,7 +6498,7 @@ pub struct _ze_context_evict_image_params_t {
 }
 pub type ze_context_evict_image_params_t = _ze_context_evict_image_params_t;
 pub type ze_pfnContextEvictImageCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_context_evict_image_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6508,7 +6528,7 @@ pub struct _ze_command_queue_create_params_t {
 }
 pub type ze_command_queue_create_params_t = _ze_command_queue_create_params_t;
 pub type ze_pfnCommandQueueCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_queue_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6522,7 +6542,7 @@ pub struct _ze_command_queue_destroy_params_t {
 }
 pub type ze_command_queue_destroy_params_t = _ze_command_queue_destroy_params_t;
 pub type ze_pfnCommandQueueDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_queue_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6540,7 +6560,7 @@ pub struct _ze_command_queue_execute_command_lists_params_t {
 pub type ze_command_queue_execute_command_lists_params_t =
     _ze_command_queue_execute_command_lists_params_t;
 pub type ze_pfnCommandQueueExecuteCommandListsCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_queue_execute_command_lists_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6555,7 +6575,7 @@ pub struct _ze_command_queue_synchronize_params_t {
 }
 pub type ze_command_queue_synchronize_params_t = _ze_command_queue_synchronize_params_t;
 pub type ze_pfnCommandQueueSynchronizeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_queue_synchronize_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6581,7 +6601,7 @@ pub struct _ze_command_list_create_params_t {
 }
 pub type ze_command_list_create_params_t = _ze_command_list_create_params_t;
 pub type ze_pfnCommandListCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6598,7 +6618,7 @@ pub struct _ze_command_list_create_immediate_params_t {
 }
 pub type ze_command_list_create_immediate_params_t = _ze_command_list_create_immediate_params_t;
 pub type ze_pfnCommandListCreateImmediateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_create_immediate_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6612,7 +6632,7 @@ pub struct _ze_command_list_destroy_params_t {
 }
 pub type ze_command_list_destroy_params_t = _ze_command_list_destroy_params_t;
 pub type ze_pfnCommandListDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6626,7 +6646,7 @@ pub struct _ze_command_list_close_params_t {
 }
 pub type ze_command_list_close_params_t = _ze_command_list_close_params_t;
 pub type ze_pfnCommandListCloseCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_close_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6640,7 +6660,7 @@ pub struct _ze_command_list_reset_params_t {
 }
 pub type ze_command_list_reset_params_t = _ze_command_list_reset_params_t;
 pub type ze_pfnCommandListResetCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_reset_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6659,7 +6679,7 @@ pub struct _ze_command_list_append_write_global_timestamp_params_t {
 pub type ze_command_list_append_write_global_timestamp_params_t =
     _ze_command_list_append_write_global_timestamp_params_t;
 pub type ze_pfnCommandListAppendWriteGlobalTimestampCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_write_global_timestamp_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6676,7 +6696,7 @@ pub struct _ze_command_list_append_barrier_params_t {
 }
 pub type ze_command_list_append_barrier_params_t = _ze_command_list_append_barrier_params_t;
 pub type ze_pfnCommandListAppendBarrierCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_barrier_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6697,7 +6717,7 @@ pub struct _ze_command_list_append_memory_ranges_barrier_params_t {
 pub type ze_command_list_append_memory_ranges_barrier_params_t =
     _ze_command_list_append_memory_ranges_barrier_params_t;
 pub type ze_pfnCommandListAppendMemoryRangesBarrierCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_memory_ranges_barrier_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6717,7 +6737,7 @@ pub struct _ze_command_list_append_memory_copy_params_t {
 }
 pub type ze_command_list_append_memory_copy_params_t = _ze_command_list_append_memory_copy_params_t;
 pub type ze_pfnCommandListAppendMemoryCopyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_memory_copy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6738,7 +6758,7 @@ pub struct _ze_command_list_append_memory_fill_params_t {
 }
 pub type ze_command_list_append_memory_fill_params_t = _ze_command_list_append_memory_fill_params_t;
 pub type ze_pfnCommandListAppendMemoryFillCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_memory_fill_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6764,7 +6784,7 @@ pub struct _ze_command_list_append_memory_copy_region_params_t {
 pub type ze_command_list_append_memory_copy_region_params_t =
     _ze_command_list_append_memory_copy_region_params_t;
 pub type ze_pfnCommandListAppendMemoryCopyRegionCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_memory_copy_region_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6786,7 +6806,7 @@ pub struct _ze_command_list_append_memory_copy_from_context_params_t {
 pub type ze_command_list_append_memory_copy_from_context_params_t =
     _ze_command_list_append_memory_copy_from_context_params_t;
 pub type ze_pfnCommandListAppendMemoryCopyFromContextCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_memory_copy_from_context_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6805,7 +6825,7 @@ pub struct _ze_command_list_append_image_copy_params_t {
 }
 pub type ze_command_list_append_image_copy_params_t = _ze_command_list_append_image_copy_params_t;
 pub type ze_pfnCommandListAppendImageCopyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_image_copy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6827,7 +6847,7 @@ pub struct _ze_command_list_append_image_copy_region_params_t {
 pub type ze_command_list_append_image_copy_region_params_t =
     _ze_command_list_append_image_copy_region_params_t;
 pub type ze_pfnCommandListAppendImageCopyRegionCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_image_copy_region_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6848,7 +6868,7 @@ pub struct _ze_command_list_append_image_copy_to_memory_params_t {
 pub type ze_command_list_append_image_copy_to_memory_params_t =
     _ze_command_list_append_image_copy_to_memory_params_t;
 pub type ze_pfnCommandListAppendImageCopyToMemoryCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_image_copy_to_memory_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6869,7 +6889,7 @@ pub struct _ze_command_list_append_image_copy_from_memory_params_t {
 pub type ze_command_list_append_image_copy_from_memory_params_t =
     _ze_command_list_append_image_copy_from_memory_params_t;
 pub type ze_pfnCommandListAppendImageCopyFromMemoryCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_image_copy_from_memory_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6886,7 +6906,7 @@ pub struct _ze_command_list_append_memory_prefetch_params_t {
 pub type ze_command_list_append_memory_prefetch_params_t =
     _ze_command_list_append_memory_prefetch_params_t;
 pub type ze_pfnCommandListAppendMemoryPrefetchCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_memory_prefetch_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6904,7 +6924,7 @@ pub struct _ze_command_list_append_mem_advise_params_t {
 }
 pub type ze_command_list_append_mem_advise_params_t = _ze_command_list_append_mem_advise_params_t;
 pub type ze_pfnCommandListAppendMemAdviseCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_mem_advise_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6920,7 +6940,7 @@ pub struct _ze_command_list_append_signal_event_params_t {
 pub type ze_command_list_append_signal_event_params_t =
     _ze_command_list_append_signal_event_params_t;
 pub type ze_pfnCommandListAppendSignalEventCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_signal_event_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6937,7 +6957,7 @@ pub struct _ze_command_list_append_wait_on_events_params_t {
 pub type ze_command_list_append_wait_on_events_params_t =
     _ze_command_list_append_wait_on_events_params_t;
 pub type ze_pfnCommandListAppendWaitOnEventsCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_wait_on_events_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6952,7 +6972,7 @@ pub struct _ze_command_list_append_event_reset_params_t {
 }
 pub type ze_command_list_append_event_reset_params_t = _ze_command_list_append_event_reset_params_t;
 pub type ze_pfnCommandListAppendEventResetCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_event_reset_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6974,7 +6994,7 @@ pub struct _ze_command_list_append_query_kernel_timestamps_params_t {
 pub type ze_command_list_append_query_kernel_timestamps_params_t =
     _ze_command_list_append_query_kernel_timestamps_params_t;
 pub type ze_pfnCommandListAppendQueryKernelTimestampsCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_query_kernel_timestamps_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -6994,7 +7014,7 @@ pub struct _ze_command_list_append_launch_kernel_params_t {
 pub type ze_command_list_append_launch_kernel_params_t =
     _ze_command_list_append_launch_kernel_params_t;
 pub type ze_pfnCommandListAppendLaunchKernelCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_launch_kernel_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7014,7 +7034,7 @@ pub struct _ze_command_list_append_launch_cooperative_kernel_params_t {
 pub type ze_command_list_append_launch_cooperative_kernel_params_t =
     _ze_command_list_append_launch_cooperative_kernel_params_t;
 pub type ze_pfnCommandListAppendLaunchCooperativeKernelCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_launch_cooperative_kernel_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7034,7 +7054,7 @@ pub struct _ze_command_list_append_launch_kernel_indirect_params_t {
 pub type ze_command_list_append_launch_kernel_indirect_params_t =
     _ze_command_list_append_launch_kernel_indirect_params_t;
 pub type ze_pfnCommandListAppendLaunchKernelIndirectCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_launch_kernel_indirect_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7056,7 +7076,7 @@ pub struct _ze_command_list_append_launch_multiple_kernels_indirect_params_t {
 pub type ze_command_list_append_launch_multiple_kernels_indirect_params_t =
     _ze_command_list_append_launch_multiple_kernels_indirect_params_t;
 pub type ze_pfnCommandListAppendLaunchMultipleKernelsIndirectCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_command_list_append_launch_multiple_kernels_indirect_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7104,7 +7124,7 @@ pub struct _ze_image_get_properties_params_t {
 }
 pub type ze_image_get_properties_params_t = _ze_image_get_properties_params_t;
 pub type ze_pfnImageGetPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_image_get_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7121,7 +7141,7 @@ pub struct _ze_image_create_params_t {
 }
 pub type ze_image_create_params_t = _ze_image_create_params_t;
 pub type ze_pfnImageCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_image_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7135,7 +7155,7 @@ pub struct _ze_image_destroy_params_t {
 }
 pub type ze_image_destroy_params_t = _ze_image_destroy_params_t;
 pub type ze_pfnImageDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_image_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7163,7 +7183,7 @@ pub struct _ze_mem_alloc_shared_params_t {
 }
 pub type ze_mem_alloc_shared_params_t = _ze_mem_alloc_shared_params_t;
 pub type ze_pfnMemAllocSharedCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_alloc_shared_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7182,7 +7202,7 @@ pub struct _ze_mem_alloc_device_params_t {
 }
 pub type ze_mem_alloc_device_params_t = _ze_mem_alloc_device_params_t;
 pub type ze_pfnMemAllocDeviceCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_alloc_device_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7200,7 +7220,7 @@ pub struct _ze_mem_alloc_host_params_t {
 }
 pub type ze_mem_alloc_host_params_t = _ze_mem_alloc_host_params_t;
 pub type ze_pfnMemAllocHostCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_alloc_host_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7215,7 +7235,7 @@ pub struct _ze_mem_free_params_t {
 }
 pub type ze_mem_free_params_t = _ze_mem_free_params_t;
 pub type ze_pfnMemFreeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_free_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7232,7 +7252,7 @@ pub struct _ze_mem_get_alloc_properties_params_t {
 }
 pub type ze_mem_get_alloc_properties_params_t = _ze_mem_get_alloc_properties_params_t;
 pub type ze_pfnMemGetAllocPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_get_alloc_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7249,7 +7269,7 @@ pub struct _ze_mem_get_address_range_params_t {
 }
 pub type ze_mem_get_address_range_params_t = _ze_mem_get_address_range_params_t;
 pub type ze_pfnMemGetAddressRangeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_get_address_range_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7265,7 +7285,7 @@ pub struct _ze_mem_get_ipc_handle_params_t {
 }
 pub type ze_mem_get_ipc_handle_params_t = _ze_mem_get_ipc_handle_params_t;
 pub type ze_pfnMemGetIpcHandleCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_get_ipc_handle_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7283,7 +7303,7 @@ pub struct _ze_mem_open_ipc_handle_params_t {
 }
 pub type ze_mem_open_ipc_handle_params_t = _ze_mem_open_ipc_handle_params_t;
 pub type ze_pfnMemOpenIpcHandleCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_open_ipc_handle_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7298,7 +7318,7 @@ pub struct _ze_mem_close_ipc_handle_params_t {
 }
 pub type ze_mem_close_ipc_handle_params_t = _ze_mem_close_ipc_handle_params_t;
 pub type ze_pfnMemCloseIpcHandleCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_mem_close_ipc_handle_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7328,7 +7348,7 @@ pub struct _ze_fence_create_params_t {
 }
 pub type ze_fence_create_params_t = _ze_fence_create_params_t;
 pub type ze_pfnFenceCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_fence_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7342,7 +7362,7 @@ pub struct _ze_fence_destroy_params_t {
 }
 pub type ze_fence_destroy_params_t = _ze_fence_destroy_params_t;
 pub type ze_pfnFenceDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_fence_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7357,7 +7377,7 @@ pub struct _ze_fence_host_synchronize_params_t {
 }
 pub type ze_fence_host_synchronize_params_t = _ze_fence_host_synchronize_params_t;
 pub type ze_pfnFenceHostSynchronizeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_fence_host_synchronize_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7371,7 +7391,7 @@ pub struct _ze_fence_query_status_params_t {
 }
 pub type ze_fence_query_status_params_t = _ze_fence_query_status_params_t;
 pub type ze_pfnFenceQueryStatusCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_fence_query_status_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7385,7 +7405,7 @@ pub struct _ze_fence_reset_params_t {
 }
 pub type ze_fence_reset_params_t = _ze_fence_reset_params_t;
 pub type ze_pfnFenceResetCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_fence_reset_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7413,7 +7433,7 @@ pub struct _ze_event_pool_create_params_t {
 }
 pub type ze_event_pool_create_params_t = _ze_event_pool_create_params_t;
 pub type ze_pfnEventPoolCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_pool_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7427,7 +7447,7 @@ pub struct _ze_event_pool_destroy_params_t {
 }
 pub type ze_event_pool_destroy_params_t = _ze_event_pool_destroy_params_t;
 pub type ze_pfnEventPoolDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_pool_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7442,7 +7462,7 @@ pub struct _ze_event_pool_get_ipc_handle_params_t {
 }
 pub type ze_event_pool_get_ipc_handle_params_t = _ze_event_pool_get_ipc_handle_params_t;
 pub type ze_pfnEventPoolGetIpcHandleCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_pool_get_ipc_handle_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7458,7 +7478,7 @@ pub struct _ze_event_pool_open_ipc_handle_params_t {
 }
 pub type ze_event_pool_open_ipc_handle_params_t = _ze_event_pool_open_ipc_handle_params_t;
 pub type ze_pfnEventPoolOpenIpcHandleCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_pool_open_ipc_handle_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7472,7 +7492,7 @@ pub struct _ze_event_pool_close_ipc_handle_params_t {
 }
 pub type ze_event_pool_close_ipc_handle_params_t = _ze_event_pool_close_ipc_handle_params_t;
 pub type ze_pfnEventPoolCloseIpcHandleCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_pool_close_ipc_handle_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7498,7 +7518,7 @@ pub struct _ze_event_create_params_t {
 }
 pub type ze_event_create_params_t = _ze_event_create_params_t;
 pub type ze_pfnEventCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7512,7 +7532,7 @@ pub struct _ze_event_destroy_params_t {
 }
 pub type ze_event_destroy_params_t = _ze_event_destroy_params_t;
 pub type ze_pfnEventDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7526,7 +7546,7 @@ pub struct _ze_event_host_signal_params_t {
 }
 pub type ze_event_host_signal_params_t = _ze_event_host_signal_params_t;
 pub type ze_pfnEventHostSignalCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_host_signal_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7541,7 +7561,7 @@ pub struct _ze_event_host_synchronize_params_t {
 }
 pub type ze_event_host_synchronize_params_t = _ze_event_host_synchronize_params_t;
 pub type ze_pfnEventHostSynchronizeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_host_synchronize_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7555,7 +7575,7 @@ pub struct _ze_event_query_status_params_t {
 }
 pub type ze_event_query_status_params_t = _ze_event_query_status_params_t;
 pub type ze_pfnEventQueryStatusCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_query_status_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7569,7 +7589,7 @@ pub struct _ze_event_host_reset_params_t {
 }
 pub type ze_event_host_reset_params_t = _ze_event_host_reset_params_t;
 pub type ze_pfnEventHostResetCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_host_reset_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7584,7 +7604,7 @@ pub struct _ze_event_query_kernel_timestamp_params_t {
 }
 pub type ze_event_query_kernel_timestamp_params_t = _ze_event_query_kernel_timestamp_params_t;
 pub type ze_pfnEventQueryKernelTimestampCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_event_query_kernel_timestamp_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7614,7 +7634,7 @@ pub struct _ze_module_create_params_t {
 }
 pub type ze_module_create_params_t = _ze_module_create_params_t;
 pub type ze_pfnModuleCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7628,7 +7648,7 @@ pub struct _ze_module_destroy_params_t {
 }
 pub type ze_module_destroy_params_t = _ze_module_destroy_params_t;
 pub type ze_pfnModuleDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7644,7 +7664,7 @@ pub struct _ze_module_dynamic_link_params_t {
 }
 pub type ze_module_dynamic_link_params_t = _ze_module_dynamic_link_params_t;
 pub type ze_pfnModuleDynamicLinkCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_dynamic_link_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7660,7 +7680,7 @@ pub struct _ze_module_get_native_binary_params_t {
 }
 pub type ze_module_get_native_binary_params_t = _ze_module_get_native_binary_params_t;
 pub type ze_pfnModuleGetNativeBinaryCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_get_native_binary_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7677,7 +7697,7 @@ pub struct _ze_module_get_global_pointer_params_t {
 }
 pub type ze_module_get_global_pointer_params_t = _ze_module_get_global_pointer_params_t;
 pub type ze_pfnModuleGetGlobalPointerCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_get_global_pointer_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7693,7 +7713,7 @@ pub struct _ze_module_get_kernel_names_params_t {
 }
 pub type ze_module_get_kernel_names_params_t = _ze_module_get_kernel_names_params_t;
 pub type ze_pfnModuleGetKernelNamesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_get_kernel_names_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7708,7 +7728,7 @@ pub struct _ze_module_get_properties_params_t {
 }
 pub type ze_module_get_properties_params_t = _ze_module_get_properties_params_t;
 pub type ze_pfnModuleGetPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_get_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7724,7 +7744,7 @@ pub struct _ze_module_get_function_pointer_params_t {
 }
 pub type ze_module_get_function_pointer_params_t = _ze_module_get_function_pointer_params_t;
 pub type ze_pfnModuleGetFunctionPointerCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_get_function_pointer_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7751,7 +7771,7 @@ pub struct _ze_module_build_log_destroy_params_t {
 }
 pub type ze_module_build_log_destroy_params_t = _ze_module_build_log_destroy_params_t;
 pub type ze_pfnModuleBuildLogDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_build_log_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7767,7 +7787,7 @@ pub struct _ze_module_build_log_get_string_params_t {
 }
 pub type ze_module_build_log_get_string_params_t = _ze_module_build_log_get_string_params_t;
 pub type ze_pfnModuleBuildLogGetStringCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_module_build_log_get_string_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7790,7 +7810,7 @@ pub struct _ze_kernel_create_params_t {
 }
 pub type ze_kernel_create_params_t = _ze_kernel_create_params_t;
 pub type ze_pfnKernelCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7804,7 +7824,7 @@ pub struct _ze_kernel_destroy_params_t {
 }
 pub type ze_kernel_destroy_params_t = _ze_kernel_destroy_params_t;
 pub type ze_pfnKernelDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7819,7 +7839,7 @@ pub struct _ze_kernel_set_cache_config_params_t {
 }
 pub type ze_kernel_set_cache_config_params_t = _ze_kernel_set_cache_config_params_t;
 pub type ze_pfnKernelSetCacheConfigCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_set_cache_config_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7836,7 +7856,7 @@ pub struct _ze_kernel_set_group_size_params_t {
 }
 pub type ze_kernel_set_group_size_params_t = _ze_kernel_set_group_size_params_t;
 pub type ze_pfnKernelSetGroupSizeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_set_group_size_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7856,7 +7876,7 @@ pub struct _ze_kernel_suggest_group_size_params_t {
 }
 pub type ze_kernel_suggest_group_size_params_t = _ze_kernel_suggest_group_size_params_t;
 pub type ze_pfnKernelSuggestGroupSizeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_suggest_group_size_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7872,7 +7892,7 @@ pub struct _ze_kernel_suggest_max_cooperative_group_count_params_t {
 pub type ze_kernel_suggest_max_cooperative_group_count_params_t =
     _ze_kernel_suggest_max_cooperative_group_count_params_t;
 pub type ze_pfnKernelSuggestMaxCooperativeGroupCountCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_suggest_max_cooperative_group_count_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7889,7 +7909,7 @@ pub struct _ze_kernel_set_argument_value_params_t {
 }
 pub type ze_kernel_set_argument_value_params_t = _ze_kernel_set_argument_value_params_t;
 pub type ze_pfnKernelSetArgumentValueCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_set_argument_value_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7904,7 +7924,7 @@ pub struct _ze_kernel_set_indirect_access_params_t {
 }
 pub type ze_kernel_set_indirect_access_params_t = _ze_kernel_set_indirect_access_params_t;
 pub type ze_pfnKernelSetIndirectAccessCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_set_indirect_access_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7919,7 +7939,7 @@ pub struct _ze_kernel_get_indirect_access_params_t {
 }
 pub type ze_kernel_get_indirect_access_params_t = _ze_kernel_get_indirect_access_params_t;
 pub type ze_pfnKernelGetIndirectAccessCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_get_indirect_access_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7935,7 +7955,7 @@ pub struct _ze_kernel_get_source_attributes_params_t {
 }
 pub type ze_kernel_get_source_attributes_params_t = _ze_kernel_get_source_attributes_params_t;
 pub type ze_pfnKernelGetSourceAttributesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_get_source_attributes_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7950,7 +7970,7 @@ pub struct _ze_kernel_get_properties_params_t {
 }
 pub type ze_kernel_get_properties_params_t = _ze_kernel_get_properties_params_t;
 pub type ze_pfnKernelGetPropertiesCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_get_properties_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -7966,7 +7986,7 @@ pub struct _ze_kernel_get_name_params_t {
 }
 pub type ze_kernel_get_name_params_t = _ze_kernel_get_name_params_t;
 pub type ze_pfnKernelGetNameCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_kernel_get_name_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8000,7 +8020,7 @@ pub struct _ze_sampler_create_params_t {
 }
 pub type ze_sampler_create_params_t = _ze_sampler_create_params_t;
 pub type ze_pfnSamplerCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_sampler_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8014,7 +8034,7 @@ pub struct _ze_sampler_destroy_params_t {
 }
 pub type ze_sampler_destroy_params_t = _ze_sampler_destroy_params_t;
 pub type ze_pfnSamplerDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_sampler_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8038,7 +8058,7 @@ pub struct _ze_physical_mem_create_params_t {
 }
 pub type ze_physical_mem_create_params_t = _ze_physical_mem_create_params_t;
 pub type ze_pfnPhysicalMemCreateCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_physical_mem_create_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8053,7 +8073,7 @@ pub struct _ze_physical_mem_destroy_params_t {
 }
 pub type ze_physical_mem_destroy_params_t = _ze_physical_mem_destroy_params_t;
 pub type ze_pfnPhysicalMemDestroyCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_physical_mem_destroy_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8077,7 +8097,7 @@ pub struct _ze_virtual_mem_reserve_params_t {
 }
 pub type ze_virtual_mem_reserve_params_t = _ze_virtual_mem_reserve_params_t;
 pub type ze_pfnVirtualMemReserveCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_virtual_mem_reserve_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8093,7 +8113,7 @@ pub struct _ze_virtual_mem_free_params_t {
 }
 pub type ze_virtual_mem_free_params_t = _ze_virtual_mem_free_params_t;
 pub type ze_pfnVirtualMemFreeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_virtual_mem_free_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8110,7 +8130,7 @@ pub struct _ze_virtual_mem_query_page_size_params_t {
 }
 pub type ze_virtual_mem_query_page_size_params_t = _ze_virtual_mem_query_page_size_params_t;
 pub type ze_pfnVirtualMemQueryPageSizeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_virtual_mem_query_page_size_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8129,7 +8149,7 @@ pub struct _ze_virtual_mem_map_params_t {
 }
 pub type ze_virtual_mem_map_params_t = _ze_virtual_mem_map_params_t;
 pub type ze_pfnVirtualMemMapCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_virtual_mem_map_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8145,7 +8165,7 @@ pub struct _ze_virtual_mem_unmap_params_t {
 }
 pub type ze_virtual_mem_unmap_params_t = _ze_virtual_mem_unmap_params_t;
 pub type ze_pfnVirtualMemUnmapCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_virtual_mem_unmap_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8163,7 +8183,7 @@ pub struct _ze_virtual_mem_set_access_attribute_params_t {
 pub type ze_virtual_mem_set_access_attribute_params_t =
     _ze_virtual_mem_set_access_attribute_params_t;
 pub type ze_pfnVirtualMemSetAccessAttributeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_virtual_mem_set_access_attribute_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,
@@ -8182,7 +8202,7 @@ pub struct _ze_virtual_mem_get_access_attribute_params_t {
 pub type ze_virtual_mem_get_access_attribute_params_t =
     _ze_virtual_mem_get_access_attribute_params_t;
 pub type ze_pfnVirtualMemGetAccessAttributeCb_t = ::core::option::Option<
-    unsafe  extern "C" fn(
+    unsafe extern "C" fn(
         params: *mut ze_virtual_mem_get_access_attribute_params_t,
         result: ze_result_t,
         pTracerUserData: *mut ::core::ffi::c_void,

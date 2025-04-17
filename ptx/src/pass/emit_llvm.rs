@@ -155,7 +155,6 @@ impl Drop for MemoryBuffer {
         }
     }
 }
-
 impl Deref for MemoryBuffer {
     type Target = [u8];
 

@@ -64,6 +64,11 @@ pub struct CUctx_st {
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct CUcontext(pub *mut CUctx_st);
+impl Default for CUcontext {
+    fn default() -> Self {
+        Self(std::ptr::null_mut())
+    }
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct CUmod_st {
@@ -8832,6 +8837,21 @@ pub type CUresult = ::core::result::Result<(), CUerror>;
 const _: fn() = || {
     let _ = std::mem::transmute::<CUresult, u32>;
 };
+#[cfg(feature = "intel")]
+impl From<ze_result_t> for CUresult {
+    fn from(value: ze_result_t) -> Self {
+        ze_to_cuda_result(value)
+    }
+}
+// Fix for Result<(),CUerror> conversion 
+#[cfg(feature = "intel")]
+impl From<CUerror> for CUresult {
+    fn from(error: CUerror) -> Self {
+        // Assuming a direct mapping between CUerror and CUresult
+        // This would need more sophisticated mapping if they don't correspond
+        unsafe { std::mem::transmute(error) }
+    }
+}
 #[cfg(feature = "amd")]
 impl From<hip_runtime_sys::hipErrorCode_t> for CUerror {
     fn from(error: hip_runtime_sys::hipErrorCode_t) -> Self {

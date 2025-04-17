@@ -4,7 +4,8 @@ use hip_runtime_sys::*;
 use std::{ffi::c_void, ptr};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
-
+#[cfg(feature = "intel")]
+use crate::r#impl::ZeResult;
 #[cfg(feature = "amd")]
 pub(crate) unsafe fn get_attribute(
     data: *mut c_void,
@@ -211,7 +212,7 @@ pub(crate) unsafe fn get_pointer_attribute(
     // Get the current context
     let ze_context = match super::context::get_current_ze() {
         Ok(ctx) => ctx,
-        Err(e) => return e.into(),
+        Err(e) => return Err(e),
     };
 
     match attribute {
@@ -238,7 +239,7 @@ pub(crate) unsafe fn get_pointer_attribute(
             );
 
             if result != ze_result_t::ZE_RESULT_SUCCESS {
-                return result.into();
+                return super::ze_to_cuda_result(result);
             }
 
             // Convert Level Zero memory type to CUDA memory type
@@ -246,7 +247,7 @@ pub(crate) unsafe fn get_pointer_attribute(
                 ze_memory_type_t::ZE_MEMORY_TYPE_HOST => CUmemorytype::CU_MEMORYTYPE_HOST,
                 ze_memory_type_t::ZE_MEMORY_TYPE_DEVICE => CUmemorytype::CU_MEMORYTYPE_DEVICE,
                 ze_memory_type_t::ZE_MEMORY_TYPE_SHARED => CUmemorytype::CU_MEMORYTYPE_UNIFIED,
-                _ => return Err(ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT).into(),
+                _ => return ZeResult(ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT).into(),
             };
 
             Ok(())
@@ -270,7 +271,7 @@ pub(crate) unsafe fn get_pointer_attribute(
             );
 
             if result != ze_result_t::ZE_RESULT_SUCCESS {
-                return result.into();
+                return super::ze_to_cuda_result(result);
             }
 
             Ok(())
@@ -294,13 +295,13 @@ pub(crate) unsafe fn get_pointer_attribute(
             );
 
             if result != ze_result_t::ZE_RESULT_SUCCESS {
-                return result.into();
+                return super::ze_to_cuda_result(result);
             }
 
             Ok(())
         }
 
         // For other attributes, handle based on Intel capabilities or return unsupported
-        _ => ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE.into(),
+        _ => ZeResult(ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE).into(),
     }
 }

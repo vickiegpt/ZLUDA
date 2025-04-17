@@ -1,5 +1,4 @@
 use super::context;
-use super::error_to_curesult;
 use super::ZludaObject;
 use super::{Decuda, Encuda};
 use cuda_types::cuda::*;
@@ -9,22 +8,20 @@ use ze_runtime_sys::*;
 
 /// SPIR-V module implementation for Intel
 pub(crate) struct SpirvModule {
-    ast: ptx_parser::Module<'static>,
-    name: String,
-    module: ze_module_handle_t,
-    functions: Vec<(String, ze_kernel_handle_t)>,
+    pub ast: ptx_parser::ModuleAst,
+    pub name: String,
+    pub module: ze_module_handle_t,
+    pub functions: Vec<(String, ze_kernel_handle_t)>,
 }
 
 impl SpirvModule {
     pub fn new(text: &str) -> Result<Self, Box<dyn std::error::Error>> {
         // Parse PTX
-        let ast = ptx_parser::Module::parse(text)?;
+        let ast = ptx_parser::parse_module_checked(text).unwrap();
+        let ast = unsafe { std::mem::transmute(ast) }; // Convert lifetime
 
-        // Get function name from the PTX
-        let module_name = ast
-            .name
-            .clone()
-            .unwrap_or_else(|| "anonymous_module".to_string());
+        // Get module name (using a default if not available)
+        let module_name = "anonymous_module".to_string();
 
         // Create a SPIRV module from the PTX
         let spirv_module = Self::create_spirv_module(&ast, &module_name)?;
@@ -33,17 +30,19 @@ impl SpirvModule {
     }
 
     fn create_spirv_module(
-        ast: &ptx_parser::Module,
+        ast: &ptx_parser::ModuleAst,
         name: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Get the current context
         let ctx = context::get_current_ze().unwrap();
 
         // Convert PTX to LLVM IR (simplified, actual implementation would need PTX->LLVM conversion)
-        let llvm_module = ptx::ptx_to_llvm(ast.clone())?;
+        let llvm_module = ptx::to_llvm_module(ast.clone())?;
 
         // Convert LLVM IR to SPIRV binary
-        let spirv_binary = ptx::llvm_to_spirv(&llvm_module)?;
+        let spirv_binary = ptx::llvm_to_spirv(unsafe {
+            std::str::from_raw_parts(llvm_module.llvm_ir.as_ptr(), llvm_module.llvm_ir.len())
+        })?;
 
         // Create module build description
         let module_desc = ze_module_desc_t {
@@ -51,7 +50,7 @@ impl SpirvModule {
             pNext: ptr::null(),
             format: ze_module_format_t::ZE_MODULE_FORMAT_IL_SPIRV,
             inputSize: spirv_binary.len(),
-            pInputModule: spirv_binary.as_ptr() as *const c_void,
+            pInputModule: spirv_binary.as_ptr(),
             pBuildFlags: ptr::null(),
             pConstants: ptr::null(),
         };
@@ -60,13 +59,13 @@ impl SpirvModule {
         let mut build_log = ptr::null_mut();
 
         // Create module using the ZE API
-        let mut ze_module = ptr::null_mut();
+        let ze_module: *mut ze_module_handle_t = ptr::null_mut();
         let result = unsafe {
             zeModuleCreate(
                 ctx.context,
                 ctx.device,
                 &module_desc,
-                &mut ze_module,
+                ze_module,
                 &mut build_log,
             )
         };
@@ -90,7 +89,7 @@ impl SpirvModule {
         // Load module functions
         let functions = Vec::new();
         let mut spirv_module = SpirvModule {
-            ast: unsafe { mem::transmute(ast) }, // Extend ast lifetime
+            ast: ast.clone(),
             name: name.to_string(),
             module,
             functions,
@@ -146,7 +145,7 @@ impl SpirvModule {
 
             // Create the kernel
             let mut kernel = ptr::null_mut();
-            let result = unsafe { zeKernelCreate(self.module, &kernel_desc, &mut kernel) };
+            let result = unsafe { zeKernelCreate(self.module, &kernel_desc, unsafe { *kernel }) };
 
             if result != ze_result_t::ZE_RESULT_SUCCESS {
                 return Err(Box::new(std::io::Error::new(
@@ -157,7 +156,7 @@ impl SpirvModule {
 
             // Store the kernel handle
             self.functions
-                .push((name_str.to_string(), unsafe { *kernel }));
+                .push((name_str.to_string(), unsafe { **kernel }));
         }
 
         Ok(())
@@ -228,7 +227,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     let spirv_module = SpirvModule::new(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
     match load_data_impl(module, spirv_module) {
         Ok(()) => CUresult::SUCCESS,
-        Err(e) => e.into(),
+        Err(e) => Err(e),
     }
 }
 
@@ -257,15 +256,8 @@ pub(crate) fn load_data_impl(
     let mut ze_module = ptr::null_mut();
     let mut build_log = ptr::null_mut();
 
-    let result = unsafe {
-        zeModuleCreate(
-            context,
-            device,
-            &module_desc,
-            &mut ze_module,
-            &mut build_log,
-        )
-    };
+    let result =
+        unsafe { zeModuleCreate(context, device, &module_desc, ze_module, &mut build_log) };
 
     // Check if build log exists and handle it
     if !build_log.is_null() {
@@ -293,12 +285,13 @@ pub(crate) fn load_data_impl(
 
 fn ptx_to_spirv(spirv_module: &SpirvModule) -> Result<Vec<u8>, CUerror> {
     // Convert PTX AST to LLVM IR
-    let llvm_module =
-        ptx::to_llvm_module(spirv_module.ast.clone()).map_err(|_| CUerror::UNKNOWN)?;
+    let llvm_module = ptx::to_llvm_module(spirv_module.ast.clone()).unwrap();
 
-    // Convert LLVM IR to SPIR-V using the robust implementation
-    let spirv_binary =
-        ptx::llvm_to_spirv_robust(&llvm_module.llvm_ir).map_err(|_| CUerror::UNKNOWN)?;
+    // Convert LLVM IR to SPIR-V using the robust implementation and the AsStr trait
+    let spirv_binary = ptx::llvm_to_spirv(unsafe {
+        std::str::from_raw_parts(llvm_module.llvm_ir.as_ptr(), llvm_module.llvm_ir.len())
+    })
+    .map_err(|_| CUerror::UNKNOWN)?;
 
     Ok(spirv_binary)
 }
@@ -337,7 +330,7 @@ pub(crate) fn get_function(
     }
 
     // Create new kernel
-    let mut kernel = ptr::null_mut();
+    let mut kernel: *mut ze_kernel_handle_t = ptr::null_mut();
     let kernel_desc = ze_kernel_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_DESC,
         pNext: ptr::null(),
@@ -345,7 +338,7 @@ pub(crate) fn get_function(
         pKernelName: name,
     };
 
-    let result = unsafe { zeKernelCreate(hmod.module, &kernel_desc,  kernel.0) };
+    let result = unsafe { zeKernelCreate(hmod.module, &kernel_desc, kernel) };
 
     match result {
         ze_result_t::ZE_RESULT_SUCCESS => {
@@ -407,12 +400,6 @@ pub(crate) fn ze_to_cuda_result(result: ze_result_t) -> CUresult {
     }
 }
 
-impl From<ze_result_t> for CUresult {
-    fn from(value: ze_result_t) -> Self {
-        ze_to_cuda_result(value)
-    }
-}
-
 // Memory type conversion
 pub fn get_pointer_attribute(
     attribute: CUpointer_attribute,
@@ -447,7 +434,9 @@ pub fn get_pointer_attribute(
             }
 
             // Store the context handle
-            unsafe { *(data.cast::<CUcontext>()) = ze_context.wrap() };
+            unsafe {
+                *(data.cast::<CUcontext>()) = <context::Context as Clone>::clone(&ze_context).wrap()
+            };
             CUresult::SUCCESS
         }
 

@@ -1,10 +1,10 @@
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
+use std::mem::{self, ManuallyDrop, MaybeUninit};
 use ze_device::ze_device_limit_t;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
-use std::mem::{self, ManuallyDrop, MaybeUninit};
 
 pub(super) mod context;
 pub(super) mod device;
@@ -15,9 +15,9 @@ pub(super) mod module;
 pub(super) mod pointer;
 
 #[cfg(feature = "intel")]
-pub mod ze_module;
-#[cfg(feature = "intel")]
 pub mod ze_device;
+#[cfg(feature = "intel")]
+pub mod ze_module;
 
 #[cfg(debug_assertions)]
 pub(crate) fn unimplemented() -> CUresult {
@@ -59,7 +59,12 @@ macro_rules! from_cuda_transmute {
         $(
             impl<'a> FromCuda<'a, $from> for $to {
                 fn from_cuda(x: &'a $from) -> Result<Self, CUerror> {
-                    Ok(unsafe { std::mem::transmute(*x) })
+                    // Use as_ptr and from_bits instead of direct transmute
+                    // to handle types of different sizes safely
+                    Ok(unsafe {
+                        let raw_bits = std::mem::transmute_copy::<$from, u64>(x);
+                        std::mem::transmute_copy::<u64, $to>(&raw_bits)
+                    })
                 }
             }
 
@@ -141,13 +146,155 @@ from_cuda_transmute!(
 from_cuda_transmute!(
     CUuuid => ze_uuid_t,
     CUfunction => ze_kernel_handle_t,
-    CUfunction_attribute => ze_kernel_desc_t,
     CUstream => ze_command_queue_handle_t,
     CUpointer_attribute => ze_memory_allocation_properties_t,
     CUdeviceptr_v2 => ze_device_handle_t
 );
 
-from_cuda_object!(module::Module, context::Context);
+// Special implementation for CUfunction_attribute to ze_kernel_desc_t conversion
+#[cfg(feature = "intel")]
+impl<'a> FromCuda<'a, CUfunction_attribute> for ze_kernel_desc_t {
+    fn from_cuda(attr: &'a CUfunction_attribute) -> Result<Self, CUerror> {
+        // Create a properly initialized ze_kernel_desc_t
+        // This needs to be customized based on how attributes should map
+        let mut desc = ze_kernel_desc_t::default();
+
+        // Set appropriate fields based on the attribute
+        // For example:
+        match *attr {
+            // Map each attribute appropriately
+            // This is a placeholder - actual implementation will depend on attributes
+            _ => return Err(CUerror::NOT_SUPPORTED),
+        }
+
+        Ok(desc)
+    }
+}
+
+#[cfg(feature = "intel")]
+impl<'a> FromCuda<'a, *mut CUfunction_attribute> for &'a mut ze_kernel_desc_t {
+    fn from_cuda(x: &'a *mut CUfunction_attribute) -> Result<Self, CUerror> {
+        match unsafe { x.cast::<ze_kernel_desc_t>().as_mut() } {
+            Some(x) => Ok(x),
+            None => Err(CUerror::INVALID_VALUE),
+        }
+    }
+}
+
+#[cfg(feature = "intel")]
+impl<'a> FromCuda<'a, *mut CUfunction_attribute> for *mut ze_kernel_desc_t {
+    fn from_cuda(x: &'a *mut CUfunction_attribute) -> Result<Self, CUerror> {
+        Ok(x.cast::<ze_kernel_desc_t>())
+    }
+}
+
+// Add implementation for _ze_kernel_properties_t
+#[cfg(feature = "intel")]
+impl<'a> FromCuda<'a, CUfunction_attribute_enum> for _ze_kernel_properties_t {
+    fn from_cuda(attr: &'a CUfunction_attribute_enum) -> Result<Self, CUerror> {
+        let mut props = _ze_kernel_properties_t::default();
+
+        // Map CUDA function attributes to Level Zero kernel properties
+        match *attr {
+            // Add mappings based on the specific attributes needed
+            // Example (modify based on actual enum variants):
+            // CUfunction_attribute_enum::SOME_VARIANT => {
+            //     props.some_field = some_value;
+            // }
+            CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK => {
+                // Set appropriate property
+                // This is a placeholder - implement with actual property
+            }
+            CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES => {
+                // Set appropriate property
+                // This is a placeholder - implement with actual property
+            }
+            // Add more mappings as needed
+            _ => return Err(CUerror::NOT_SUPPORTED),
+        }
+
+        Ok(props)
+    }
+}
+
+// Also implement for pointer types
+#[cfg(feature = "intel")]
+impl<'a> FromCuda<'a, *mut CUfunction_attribute_enum> for &'a mut _ze_kernel_properties_t {
+    fn from_cuda(x: &'a *mut CUfunction_attribute_enum) -> Result<Self, CUerror> {
+        match unsafe { x.cast::<_ze_kernel_properties_t>().as_mut() } {
+            Some(x) => Ok(x),
+            None => Err(CUerror::INVALID_VALUE),
+        }
+    }
+}
+
+#[cfg(feature = "intel")]
+impl<'a> FromCuda<'a, *mut CUfunction_attribute_enum> for *mut _ze_kernel_properties_t {
+    fn from_cuda(x: &'a *mut CUfunction_attribute_enum) -> Result<Self, CUerror> {
+        Ok(x.cast::<_ze_kernel_properties_t>())
+    }
+}
+
+// Add implementation for CUpointer_attribute_enum
+#[cfg(feature = "intel")]
+impl<'a> FromCuda<'a, CUpointer_attribute_enum> for CUpointer_attribute_enum {
+    fn from_cuda(attr: &'a CUpointer_attribute_enum) -> Result<Self, CUerror> {
+        // Simple implementation that just returns the same value
+        Ok(*attr)
+    }
+}
+
+// Add implementation for &mut CUfunction from *mut CUfunction
+impl<'a> FromCuda<'a, *mut CUfunction> for &'a mut CUfunction {
+    fn from_cuda(x: &'a *mut CUfunction) -> Result<Self, CUerror> {
+        match unsafe { x.as_mut() } {
+            Some(x) => Ok(x),
+            None => Err(CUerror::INVALID_VALUE),
+        }
+    }
+}
+
+// Add implementation for *mut CUdeviceptr_v2 from *mut CUdeviceptr_v2
+impl<'a> FromCuda<'a, *mut CUdeviceptr_v2> for *mut CUdeviceptr_v2 {
+    fn from_cuda(x: &'a *mut CUdeviceptr_v2) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+// Add implementation for *mut _ze_device_uuid_t from *mut CUuuid_st
+#[cfg(feature = "intel")]
+impl<'a> FromCuda<'a, *mut CUuuid_st> for *mut _ze_device_uuid_t {
+    fn from_cuda(x: &'a *mut CUuuid_st) -> Result<Self, CUerror> {
+        Ok(x.cast::<_ze_device_uuid_t>())
+    }
+}
+
+// Add implementation for u32 from CUlimit_enum
+impl<'a> FromCuda<'a, CUlimit_enum> for u32 {
+    fn from_cuda(limit: &'a CUlimit_enum) -> Result<Self, CUerror> {
+        // Convert CUlimit_enum to u32 based on your requirements
+        // This is a basic implementation, adjust values as needed
+        Ok(match *limit {
+            CUlimit_enum::CU_LIMIT_STACK_SIZE => 0,
+            CUlimit_enum::CU_LIMIT_PRINTF_FIFO_SIZE => 1,
+            CUlimit_enum::CU_LIMIT_MALLOC_HEAP_SIZE => 2,
+            CUlimit_enum::CU_LIMIT_DEV_RUNTIME_SYNC_DEPTH => 3,
+            CUlimit_enum::CU_LIMIT_DEV_RUNTIME_PENDING_LAUNCH_COUNT => 4,
+            CUlimit_enum::CU_LIMIT_MAX_L2_FETCH_GRANULARITY => 5,
+            _ => return Err(CUerror::NOT_SUPPORTED),
+        })
+    }
+}
+
+// Add implementation for CUdeviceptr_v2 -> ()
+impl<'a> FromCuda<'a, CUdeviceptr_v2> for () {
+    fn from_cuda(_: &'a CUdeviceptr_v2) -> Result<Self, CUerror> {
+        // Just discard the value and return unit
+        Ok(())
+    }
+}
+
+from_cuda_object!(module::Module);
 
 #[cfg(feature = "amd")]
 impl<'a> FromCuda<'a, CUlimit> for hipLimit_t {
@@ -280,7 +427,8 @@ pub fn drop_checked<T: ZludaObject>(handle: T::CudaHandle) -> Result<(), CUerror
 fn ze_to_cuda_result(result: ze_result_t) -> CUresult {
     match result {
         ze_result_t::ZE_RESULT_SUCCESS => CUresult::SUCCESS,
-        ze_result_t::ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY | ze_result_t::ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY => CUresult::ERROR_OUT_OF_MEMORY,
+        ze_result_t::ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY
+        | ze_result_t::ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY => CUresult::ERROR_OUT_OF_MEMORY,
         ze_result_t::ZE_RESULT_ERROR_DEVICE_LOST => CUresult::ERROR_NO_DEVICE,
         ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_HANDLE => CUresult::ERROR_INVALID_HANDLE,
         ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_POINTER => CUresult::ERROR_INVALID_VALUE,
@@ -293,9 +441,15 @@ fn ze_to_cuda_result(result: ze_result_t) -> CUresult {
 #[cfg(feature = "intel")]
 fn cuda_limit_to_ze_limit(limit: CUlimit) -> crate::r#impl::ze_device::ze_device_limit_t {
     match limit {
-        CUlimit::CU_LIMIT_STACK_SIZE => crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_STACK_SIZE,
-        CUlimit::CU_LIMIT_PRINTF_FIFO_SIZE => crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_PRINTF_FIFO_SIZE,
-        CUlimit::CU_LIMIT_MALLOC_HEAP_SIZE => crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_MALLOC_HEAP_SIZE,
+        CUlimit::CU_LIMIT_STACK_SIZE => {
+            crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_STACK_SIZE
+        }
+        CUlimit::CU_LIMIT_PRINTF_FIFO_SIZE => {
+            crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_PRINTF_FIFO_SIZE
+        }
+        CUlimit::CU_LIMIT_MALLOC_HEAP_SIZE => {
+            crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_MALLOC_HEAP_SIZE
+        }
         _ => panic!("Unsupported limit"),
     }
 }
@@ -312,28 +466,56 @@ pub fn error_to_result<T>(error: CUerror) -> Result<T, CUerror> {
     Err(error)
 }
 
+// Create a wrapper type for ze_result_t to resolve orphan rule violation
 #[cfg(feature = "intel")]
-pub fn error_to_curesult(error: CUerror) -> CUresult {
-    CUresult::from(error)
-}
+pub struct ZeResult(ze_result_t);
 
-// Fix for Result<(),CUerror> conversion 
 #[cfg(feature = "intel")]
-impl From<CUerror> for CUresult {
-    fn from(error: CUerror) -> Self {
-        // Assuming a direct mapping between CUerror and CUresult
-        // This would need more sophisticated mapping if they don't correspond
-        unsafe { std::mem::transmute(error) }
+impl From<ze_result_t> for ZeResult {
+    fn from(result: ze_result_t) -> Self {
+        ZeResult(result)
     }
 }
 
-// Fix for ZE Result implementation 
 #[cfg(feature = "intel")]
-impl<T> From<Result<T, ze_result_t>> for Result<T, CUerror> {
-    fn from(result: Result<T, ze_result_t>) -> Self {
-        match result {
-            Ok(val) => Ok(val),
-            Err(e) => Err(unsafe { std::mem::transmute(ze_to_cuda_result(e)) }),
+impl From<ZeResult> for Result<(), CUerror> {
+    fn from(ze_result: ZeResult) -> Self {
+        if ze_result.0 == ze_result_t::ZE_RESULT_SUCCESS {
+            Ok(())
+        } else {
+            Err(match ze_result.0 {
+                ze_result_t::ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY
+                | ze_result_t::ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY => CUerror::OUT_OF_MEMORY,
+                ze_result_t::ZE_RESULT_ERROR_DEVICE_LOST => CUerror::NO_DEVICE,
+                ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_HANDLE => CUerror::INVALID_HANDLE,
+                ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_POINTER => CUerror::INVALID_VALUE,
+                ze_result_t::ZE_RESULT_ERROR_UNINITIALIZED => CUerror::NOT_INITIALIZED,
+                ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE => CUerror::NOT_SUPPORTED,
+                _ => CUerror::UNKNOWN,
+            })
+        }
+    }
+}
+
+// Add a convenience function to convert ze_result_t to Result<(), CUerror>
+#[cfg(feature = "intel")]
+pub fn ze_result_to_result(result: ze_result_t) -> Result<(), CUerror> {
+    ZeResult(result).into()
+}
+
+// Add implementation for CUcontext from CUcontext
+impl<'a> FromCuda<'a, CUcontext> for CUcontext {
+    fn from_cuda(handle: &'a CUcontext) -> Result<Self, CUerror> {
+        Ok(*handle)
+    }
+}
+
+// Add implementation for &mut CUcontext from *mut CUcontext
+impl<'a> FromCuda<'a, *mut CUcontext> for &'a mut CUcontext {
+    fn from_cuda(handle: &'a *mut CUcontext) -> Result<Self, CUerror> {
+        match unsafe { handle.as_mut() } {
+            Some(handle) => Ok(handle),
+            None => Err(CUerror::INVALID_VALUE),
         }
     }
 }

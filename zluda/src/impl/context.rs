@@ -220,6 +220,23 @@ pub(crate) struct Context {
     pub(crate) context: ze_context_handle_t,
     pub(crate) mutable: Mutex<OwnedByContext>,
 }
+#[cfg(feature = "intel")]
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        let guard = self.mutable.lock().unwrap();
+        Self {
+            device: self.device,
+            context: self.context,
+            mutable: Mutex::new(OwnedByContext {
+                ref_count: guard.ref_count,
+                _command_queues: guard._command_queues.clone(),
+                _command_lists: guard._command_lists.clone(),
+                _modules: guard._modules.clone(),
+                _allocations: guard._allocations.clone(),
+            }),
+        }
+    }
+}
 unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
 #[cfg(feature = "intel")]
@@ -783,7 +800,18 @@ fn ze_get_command_queue(ze_ctx: &Context) -> Result<ze_command_queue_handle_t, C
 
 #[cfg(feature = "intel")]
 pub(crate) fn get_current_ze() -> Result<&'static Context, CUerror> {
-    Ok(CONTEXT_STACK.with(|stack| stack.borrow().last().copied().unwrap_or_default().0))
+    // Get the current CUcontext from the context stack
+    let current_ctx = CONTEXT_STACK
+        .with(|stack| stack.borrow().last().map(|(ctx, _)| *ctx))
+        .ok_or(CUerror::INVALID_CONTEXT)?;
+
+    // Convert the CUcontext to a &Context
+    let context = from_cuda_to(&current_ctx)?;
+
+    // This is a bit unsafe but necessary since we need to return a 'static reference
+    // In reality, the context is stored in thread_local storage so it will live
+    // for the duration of the program
+    Ok(unsafe { std::mem::transmute(context) })
 }
 
 #[cfg(feature = "intel")]

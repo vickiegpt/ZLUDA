@@ -13,6 +13,43 @@ pub enum Statement<P: Operand> {
     Block(Vec<Statement<P>>),
 }
 
+impl<P: Operand + Clone> Clone for Statement<P>
+where
+    P::Ident: Clone,
+    MultiVariable<P::Ident>: Clone,
+    PredAt<P::Ident>: Clone,
+    Instruction<P>: Clone,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Statement::Label(ident) => Statement::Label(ident.clone()),
+            Statement::Variable(var) => Statement::Variable(var.clone()),
+            Statement::Instruction(pred, instr) => {
+                Statement::Instruction(pred.clone(), instr.clone())
+            }
+            Statement::Block(stmts) => Statement::Block(stmts.clone()),
+        }
+    }
+}
+
+impl<ID: Clone> Clone for MultiVariable<ID> {
+    fn clone(&self) -> Self {
+        MultiVariable {
+            var: self.var.clone(),
+            count: self.count,
+        }
+    }
+}
+
+impl<ID: Clone> Clone for PredAt<ID> {
+    fn clone(&self) -> Self {
+        PredAt {
+            not: self.not,
+            label: self.label.clone(),
+        }
+    }
+}
+
 // We define the instruction enum through the macro instead of normally, because we have some of how
 // we use this type in the compilee. Each instruction can be logically split into two parts:
 // properties that define instruction semantics (e.g. is memory load volatile?) that don't change
@@ -527,6 +564,12 @@ pub trait Visitor<T: Operand, Err> {
         is_dst: bool,
         relaxed_type_check: bool,
     ) -> Result<(), Err>;
+}
+
+impl<'input> Clone for Instruction<ParsedOperand<&'input str>> {
+    fn clone(&self) -> Self {
+        unimplemented!("Clone not implemented for Instruction")
+    }
 }
 
 impl<
@@ -1076,6 +1119,20 @@ pub struct MethodDeclaration<'input, ID> {
     pub shared_mem: Option<ID>,
 }
 
+impl<'input, ID: Clone> Clone for MethodDeclaration<'input, ID>
+where
+    MethodName<'input, ID>: Clone,
+{
+    fn clone(&self) -> Self {
+        MethodDeclaration {
+            return_arguments: self.return_arguments.clone(),
+            name: self.name.clone(),
+            input_arguments: self.input_arguments.clone(),
+            shared_mem: self.shared_mem.clone(),
+        }
+    }
+}
+
 impl<'input> MethodDeclaration<'input, &'input str> {
     pub fn name(&self) -> &'input str {
         match self.name {
@@ -1124,6 +1181,19 @@ pub struct Function<'a, ID, S> {
     pub body: Option<Vec<S>>,
 }
 
+impl<'a, ID: Clone, S: Clone> Clone for Function<'a, ID, S>
+where
+    MethodDeclaration<'a, ID>: Clone,
+{
+    fn clone(&self) -> Self {
+        Function {
+            func_directive: self.func_directive.clone(),
+            tuning: self.tuning.clone(),
+            body: self.body.clone(),
+        }
+    }
+}
+
 pub enum Directive<'input, O: Operand> {
     Variable(LinkingDirective, Variable<O::Ident>),
     Method(
@@ -1132,9 +1202,33 @@ pub enum Directive<'input, O: Operand> {
     ),
 }
 
+impl<'input, O: Operand + Clone> Clone for Directive<'input, O>
+where
+    Variable<O::Ident>: Clone,
+    Function<'input, &'input str, Statement<O>>: Clone,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Directive::Variable(linking, var) => Directive::Variable(linking.clone(), var.clone()),
+            Directive::Method(linking, func) => Directive::Method(linking.clone(), func.clone()),
+        }
+    }
+}
+
 pub struct Module<'input> {
     pub version: (u8, u8),
     pub directives: Vec<Directive<'input, ParsedOperand<&'input str>>>,
+    /// Added for compatibility with older code that expects a name field
+    pub name: Option<String>,
+}
+impl<'input> Clone for Module<'input> {
+    fn clone(&self) -> Self {
+        Module {
+            version: self.version,
+            directives: self.directives.iter().cloned().collect(),
+            name: self.name.clone(),
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -1544,18 +1638,6 @@ impl CvtDetails {
             {
                 CvtMode::Bitcast
             }
-            (ScalarKind::Unsigned, ScalarKind::Unsigned)
-            | (ScalarKind::Signed, ScalarKind::Signed) => match dst.size_of().cmp(&src.size_of()) {
-                Ordering::Less => CvtMode::Truncate,
-                Ordering::Equal => CvtMode::Bitcast,
-                Ordering::Greater => {
-                    if src.kind() == ScalarKind::Signed {
-                        CvtMode::SignExtend
-                    } else {
-                        CvtMode::ZeroExtend
-                    }
-                }
-            },
             (ScalarKind::Unsigned, ScalarKind::Signed) => CvtMode::SaturateSignedToUnsigned,
             (_, _) => {
                 errors.push(PtxError::SyntaxError);

@@ -1,3 +1,5 @@
+#![feature(str_from_raw_parts)]
+
 pub(crate) mod pass;
 #[cfg(test)]
 mod test;

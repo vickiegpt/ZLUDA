@@ -378,6 +378,11 @@ impl From<PtxError<'_>> for ParsingError {
     }
 }
 
+/// Type alias for Module to maintain backward compatibility
+/// with code that expects a ModuleAst type
+pub use crate::ast::Module;
+pub type ModuleAst = Module<'static>;
+
 /// Parse PTX module and check for errors
 pub fn parse_module_checked<'input>(
     text: &'input str,
@@ -427,6 +432,7 @@ fn module<'a, 'input>(stream: &mut PtxParser<'a, 'input>) -> PResult<ast::Module
         .map(|(version, _, _, directives, _)| ast::Module {
             version,
             directives,
+            name: None,
         })
         .parse_next(stream)
 }

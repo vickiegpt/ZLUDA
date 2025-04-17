@@ -42,12 +42,18 @@ pub(crate) struct GlobalState {
 unsafe impl Send for GlobalState {}
 unsafe impl Sync for GlobalState {}
 
-#[derive(Clone)]
 pub(crate) struct Device {
     pub(crate) _comgr_isa: CString,
     primary_context: LiveCheck<context::Context>,
 }
-
+impl Clone for Device {
+    fn clone(&self) -> Self {
+        Self {
+            _comgr_isa: self._comgr_isa.clone(),
+            primary_context: LiveCheck::new(unsafe { self.primary_context.data.assume_init_ref().clone() }),
+        }
+    }
+}
 impl Device {
     pub(crate) fn primary_context<'a>(&'a self) -> (&'a context::Context, CUcontext) {
         unsafe {
