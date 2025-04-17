@@ -1,6 +1,7 @@
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
+use ze_device::ze_device_limit_t;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
 use std::mem::{self, ManuallyDrop, MaybeUninit};
@@ -138,12 +139,12 @@ from_cuda_transmute!(
 // Intel-specific type conversions
 #[cfg(feature = "intel")]
 from_cuda_transmute!(
-    CUuuid => hipUUID,
+    CUuuid => ze_uuid_t,
     CUfunction => ze_kernel_handle_t,
-    CUfunction_attribute => hipFunction_attribute,
+    CUfunction_attribute => ze_kernel_desc_t,
     CUstream => ze_command_queue_handle_t,
-    CUpointer_attribute => hipPointer_attribute,
-    CUdeviceptr_v2 => hipDeviceptr_t
+    CUpointer_attribute => ze_memory_allocation_properties_t,
+    CUdeviceptr_v2 => ze_device_handle_t
 );
 
 from_cuda_object!(module::Module, context::Context);

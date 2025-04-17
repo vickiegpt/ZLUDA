@@ -783,14 +783,7 @@ fn ze_get_command_queue(ze_ctx: &Context) -> Result<ze_command_queue_handle_t, C
 
 #[cfg(feature = "intel")]
 pub(crate) fn get_current_ze() -> Result<&'static Context, CUerror> {
-    CONTEXT_STACK.with(|stack| {
-        stack
-            .borrow()
-            .last()
-            .copied()
-            .unwrap_or_default()
-            .0
-    })
+    Ok(CONTEXT_STACK.with(|stack| stack.borrow().last().copied().unwrap_or_default().0))
 }
 
 #[cfg(feature = "intel")]

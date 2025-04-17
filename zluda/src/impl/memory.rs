@@ -119,9 +119,9 @@ pub(crate) fn copy_dto_h_v2(
             dst_host,
             src_device.0 as *mut std::ffi::c_void,
             byte_count,
-            ze_event_handle_t(ptr::null_mut()),  // No wait event
-            0,                                   // Number of wait events
-            *ze_event_handle_t(ptr::null_mut()), // No signal event
+            ze_event_handle_t(ptr::null_mut()), // No wait event
+            0,                                  // Number of wait events
+            &mut ze_event_handle_t(ptr::null_mut()), // No signal event
         )
     };
 
@@ -167,9 +167,9 @@ pub(crate) fn copy_hto_d_v2(
             dst_device.0 as *mut std::ffi::c_void,
             src_host as *mut ::core::ffi::c_void,
             byte_count,
-            ze_event_handle_t(ptr::null_mut()),  // No wait event
-            0,                                   // Number of wait events
-            *ze_event_handle_t(ptr::null_mut()), // No signal event
+            ze_event_handle_t(ptr::null_mut()), // No wait event
+            0,                                  // Number of wait events
+            &mut ze_event_handle_t(ptr::null_mut()), // No signal event
         )
     };
 
@@ -243,9 +243,9 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
             &ui as *const _ as *const ::core::ffi::c_void,
             std::mem::size_of::<::core::ffi::c_uint>(),
             n * std::mem::size_of::<::core::ffi::c_uint>(),
-            ze_event_handle_t(ptr::null_mut()),  // No wait event
-            0,                                   // Number of wait events
-            *ze_event_handle_t(ptr::null_mut()), // No signal event
+            ze_event_handle_t(ptr::null_mut()), // No wait event
+            0,                                  // Number of wait events
+            &mut ze_event_handle_t(ptr::null_mut()), // No signal event
         )
     };
 
@@ -286,7 +286,7 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
             n,
             ze_event_handle_t(ptr::null_mut()), // No wait event
             0,                                  // Number of wait events
-            ze_event_handle_t(ptr::null_mut()), // No signal event
+            &mut ze_event_handle_t(ptr::null_mut()), // No signal event
         )
     };
 
@@ -319,12 +319,14 @@ fn get_immediate_command_list(
         return Err(CUresult::ERROR_INVALID_VALUE);
     }
 
-    let handle = ze_command_list_handle_t(command_list);
+    unsafe {
+        let handle = ze_command_list_handle_t(*command_list);
 
-    // Track the command list in the context
-    ctx.add_command_list(handle);
+        // Track the command list in the context
+        ctx.add_command_list(handle);
 
-    Ok(handle)
+        Ok(handle)
+    }
 }
 
 #[cfg(feature = "intel")]
@@ -353,7 +355,7 @@ fn execute_immediate_command_list(
         return CUresult::ERROR_INVALID_VALUE;
     }
 
-    let queue_handle = ze_command_queue_handle_t(*command_queue.0);
+    let queue_handle = ze_command_queue_handle_t(unsafe { *command_queue });
 
     // Track the command queue in the context
     ctx.add_command_queue(queue_handle);

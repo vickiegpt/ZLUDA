@@ -87,7 +87,7 @@ impl<'a> FromCuda<'a, i32> for ze_device_handle_t {
 impl<'a> FromCuda<'a, cuda_types::cuda::CUdeviceptr_v2> for cuda_types::cuda::CUdeviceptr_v2 {
     // type Error = CUresult; // 或者您使用的任何错误类型
 
-    fn from_cuda(cuda_value: cuda_types::cuda::CUdeviceptr_v2) -> Result<Self, Self::Error> {
+    fn from_cuda(cuda_value: cuda_types::cuda::CUdeviceptr_v2) -> Result<Self> {
         // 这里实现从i32到ze_device_handle_t的转换逻辑
         // 例如：
         if unsafe { *cuda_value.0 as i32 } < 0 {

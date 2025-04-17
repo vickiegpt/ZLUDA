@@ -284,7 +284,7 @@ fn immediate_value<'a, 'input>(stream: &mut PtxParser<'a, 'input>) -> PResult<as
     .parse_next(stream)
 }
 
-pub fn parse_for_errors<'input>(text: &'input str) -> Vec<PtxError> {
+pub fn parse_for_errors<'input>(text: &'input str) -> Vec<PtxError<'input>> {
     let (tokens, mut errors) = lex_with_span_unchecked(text);
     let parse_result = {
         let state = PtxParserState::new(text, &mut errors);
@@ -320,44 +320,98 @@ fn lex_with_span_unchecked<'input>(
     (result, errors)
 }
 
-pub fn parse_module_checked<'input>(
-    text: &'input str,
-) -> Result<ast::Module<'input>, Vec<PtxError>> {
-    let mut lexer = Token::lexer(text);
-    let mut errors = Vec::new();
-    let mut tokens = Vec::new();
-    loop {
-        let maybe_token = match lexer.next() {
-            Some(maybe_token) => maybe_token,
-            None => break,
-        };
-        match maybe_token {
-            Ok(token) => tokens.push((token, lexer.span())),
-            Err(mut err) => {
-                err.0 = lexer.span();
-                errors.push(PtxError::from(err))
+// Add ParsingError definition
+#[derive(Debug, Display)]
+pub enum ParsingError {
+    #[display("Parser error: {_0}")]
+    Parser(String),
+    #[display("Lexer error at position {pos}: {message}")]
+    Lexer { pos: usize, message: String },
+    #[display("Syntax error")]
+    Syntax,
+    #[display("Unsupported feature: {_0}")]
+    Unsupported(String),
+}
+
+impl From<PtxError<'_>> for ParsingError {
+    fn from(error: PtxError<'_>) -> Self {
+        match error {
+            PtxError::ParseInt { source } => {
+                ParsingError::Parser(format!("Integer parsing error: {}", source))
+            }
+            PtxError::ParseFloat { source } => {
+                ParsingError::Parser(format!("Float parsing error: {}", source))
+            }
+            PtxError::Lexer { source } => ParsingError::Lexer {
+                pos: source.0.start,
+                message: format!("Lexer error at {:?}", source.0),
+            },
+            PtxError::Parser(err) => ParsingError::Parser(format!("Parser error: {:?}", err)),
+            PtxError::SyntaxError => ParsingError::Syntax,
+            PtxError::Todo => ParsingError::Unsupported("Unimplemented feature".to_string()),
+            PtxError::Unsupported32Bit => ParsingError::Unsupported("32-bit mode".to_string()),
+            PtxError::NonF32Ftz => ParsingError::Unsupported("Non-F32 FTZ".to_string()),
+            PtxError::WrongType => ParsingError::Parser("Wrong type".to_string()),
+            PtxError::UnknownFunction => ParsingError::Parser("Unknown function".to_string()),
+            PtxError::MalformedCall => ParsingError::Parser("Malformed call".to_string()),
+            PtxError::WrongArrayType => ParsingError::Parser("Wrong array type".to_string()),
+            PtxError::WrongVectorElement => {
+                ParsingError::Parser("Wrong vector element".to_string())
+            }
+            PtxError::MultiArrayVariable => {
+                ParsingError::Parser("Multi-array variable".to_string())
+            }
+            PtxError::ZeroDimensionArray => {
+                ParsingError::Parser("Zero dimension array".to_string())
+            }
+            PtxError::ArrayInitalizer => {
+                ParsingError::Parser("Array initializer error".to_string())
+            }
+            PtxError::NonExternPointer => ParsingError::Parser("Non-extern pointer".to_string()),
+            PtxError::UnrecognizedStatement(s) => {
+                ParsingError::Parser(format!("Unrecognized statement: {:?}", s))
+            }
+            PtxError::UnrecognizedDirective(s) => {
+                ParsingError::Parser(format!("Unrecognized directive: {:?}", s))
             }
         }
     }
+}
+
+/// Parse PTX module and check for errors
+pub fn parse_module_checked<'input>(
+    text: &'input str,
+) -> Result<ast::Module<'input>, ParsingError> {
+    let errors = parse_for_errors(text);
     if !errors.is_empty() {
-        return Err(errors);
+        return Err(errors[0].clone().into());
     }
-    let parse_result = {
-        let state = PtxParserState::new(text, &mut errors);
-        let parser = PtxParser {
-            state,
-            input: &tokens[..],
-        };
-        module
-            .parse(parser)
-            .map_err(|err| PtxError::Parser(err.into_inner()))
+
+    let (tokens, lexer_errors) = lex_with_span_unchecked(text);
+    if !lexer_errors.is_empty() {
+        return Err(lexer_errors[0].clone().into());
+    }
+
+    let mut errors = Vec::new();
+    let state = PtxParserState::new(text, &mut errors);
+
+    // Create a PtxParser instance by combining tokens and state
+    let mut parser = PtxParser {
+        input: &tokens,
+        state,
     };
-    match parse_result {
-        Ok(result) if errors.is_empty() => Ok(result),
-        Ok(_) => Err(errors),
-        Err(err) => {
-            errors.push(err);
-            Err(errors)
+
+    // Call the parse method on the module parser with the PtxParser instance
+    let result = module.parse_next(&mut parser);
+
+    match result {
+        Ok(module) => Ok(module),
+        Err(_) => {
+            if !errors.is_empty() {
+                Err(errors[0].clone().into())
+            } else {
+                Err(ParsingError::Syntax)
+            }
         }
     }
 }
@@ -1240,7 +1294,7 @@ impl<Ident> ast::ParsedOperand<Ident> {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Clone)]
 pub enum PtxError<'input> {
     #[error("{source}")]
     ParseInt {

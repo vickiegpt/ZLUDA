@@ -37,10 +37,10 @@ impl SpirvModule {
         name: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Get the current context
-        let ctx = context::get_current_ze().map_err(error_to_curesult)?;
+        let ctx = context::get_current_ze().unwrap();
 
         // Convert PTX to LLVM IR (simplified, actual implementation would need PTX->LLVM conversion)
-        let llvm_module = ptx::ptx_to_llvm(ast)?;
+        let llvm_module = ptx::ptx_to_llvm(ast.clone())?;
 
         // Convert LLVM IR to SPIRV binary
         let spirv_binary = ptx::llvm_to_spirv(&llvm_module)?;
@@ -58,10 +58,6 @@ impl SpirvModule {
 
         // Create an empty build log description
         let mut build_log = ptr::null_mut();
-        let mut build_log_desc = ze_module_build_log_desc_t {
-            stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_MODULE_PROGRAM_EXP_DESC,
-            pNext: ptr::null(),
-        };
 
         // Create module using the ZE API
         let mut ze_module = ptr::null_mut();
@@ -70,7 +66,7 @@ impl SpirvModule {
                 ctx.context,
                 ctx.device,
                 &module_desc,
-                ze_module,
+                &mut ze_module,
                 &mut build_log,
             )
         };
@@ -89,7 +85,7 @@ impl SpirvModule {
         }
 
         // Create module wrapper
-        let module = ze_module_handle_t(ze_module);
+        let module = unsafe { *ze_module };
 
         // Load module functions
         let functions = Vec::new();
@@ -124,8 +120,9 @@ impl SpirvModule {
 
         // Allocate space for function names
         let mut function_names = Vec::<*mut i8>::with_capacity(count as usize);
-        let result =
-            unsafe { zeModuleGetKernelNames(self.module, &mut count, function_names.as_mut_ptr()) };
+        let result = unsafe {
+            zeModuleGetKernelNames(self.module, &mut count, function_names.as_ptr() as *mut _)
+        };
 
         if result != ze_result_t::ZE_RESULT_SUCCESS {
             return Err(Box::new(std::io::Error::new(
@@ -149,7 +146,7 @@ impl SpirvModule {
 
             // Create the kernel
             let mut kernel = ptr::null_mut();
-            let result = unsafe { zeKernelCreate(self.module, &kernel_desc, kernel) };
+            let result = unsafe { zeKernelCreate(self.module, &kernel_desc, &mut kernel) };
 
             if result != ze_result_t::ZE_RESULT_SUCCESS {
                 return Err(Box::new(std::io::Error::new(
@@ -260,8 +257,15 @@ pub(crate) fn load_data_impl(
     let mut ze_module = ptr::null_mut();
     let mut build_log = ptr::null_mut();
 
-    let result =
-        unsafe { zeModuleCreate(context, device, &module_desc, ze_module, &mut build_log) };
+    let result = unsafe {
+        zeModuleCreate(
+            context,
+            device,
+            &module_desc,
+            &mut ze_module,
+            &mut build_log,
+        )
+    };
 
     // Check if build log exists and handle it
     if !build_log.is_null() {
@@ -290,10 +294,11 @@ pub(crate) fn load_data_impl(
 fn ptx_to_spirv(spirv_module: &SpirvModule) -> Result<Vec<u8>, CUerror> {
     // Convert PTX AST to LLVM IR
     let llvm_module =
-        ptx::to_llvm_module(spirv_module.ast).map_err(|_| CUerror::UNKNOWN)?;
+        ptx::to_llvm_module(spirv_module.ast.clone()).map_err(|_| CUerror::UNKNOWN)?;
 
-    // Convert LLVM IR to SPIR-V
-    let spirv_binary = ptx::llvm_to_spirv(&llvm_module.llvm_ir).map_err(|_| CUerror::UNKNOWN)?;
+    // Convert LLVM IR to SPIR-V using the robust implementation
+    let spirv_binary =
+        ptx::llvm_to_spirv_robust(&llvm_module.llvm_ir).map_err(|_| CUerror::UNKNOWN)?;
 
     Ok(spirv_binary)
 }
@@ -340,7 +345,7 @@ pub(crate) fn get_function(
         pKernelName: name,
     };
 
-    let result = unsafe { zeKernelCreate(hmod.module, &kernel_desc, kernel) };
+    let result = unsafe { zeKernelCreate(hmod.module, &kernel_desc,  kernel.0) };
 
     match result {
         ze_result_t::ZE_RESULT_SUCCESS => {
@@ -354,7 +359,9 @@ pub(crate) fn get_function(
             // Store the kernel in the module's function list
             let mut module_mut = hmod as *const Module as *mut Module;
             unsafe {
-                (*module_mut).functions.push((name_str.to_string(), unsafe { *kernel }));
+                (*module_mut)
+                    .functions
+                    .push((name_str.to_string(), unsafe { *kernel }));
             }
 
             *hfunc = kernel_wrapper.wrap();

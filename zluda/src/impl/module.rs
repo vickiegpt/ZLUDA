@@ -82,7 +82,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         .to_str()
         .map_err(|_| CUerror::INVALID_VALUE)?;
     let ast = ptx_parser::parse_module_checked(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
-    let llvm_module = ptx::to_llvm_module(ast).map_err(|_| CUerror::UNKNOWN)?;
+    let llvm_module = ptx::to_llvm_module(&ast).map_err(|_| CUerror::UNKNOWN)?;
     let mut dev = 0;
     unsafe { hipCtxGetDevice(&mut dev) }?;
     let mut props = unsafe { mem::zeroed() };
@@ -161,8 +161,8 @@ pub(crate) fn load_data_impl(module: &mut CUmodule, spirv_module: SpirvModule) -
     
     // Create and return the Module object
     *module = Module { 
-        context: unsafe { *context }, 
-        device: unsafe { *device }, 
+        context, 
+        device, 
         module: unsafe { *ze_module },
         functions
     }.wrap();

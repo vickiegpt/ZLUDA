@@ -42,6 +42,7 @@ pub(crate) struct GlobalState {
 unsafe impl Send for GlobalState {}
 unsafe impl Sync for GlobalState {}
 
+#[derive(Clone)]
 pub(crate) struct Device {
     pub(crate) _comgr_isa: CString,
     primary_context: LiveCheck<context::Context>,
