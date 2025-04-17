@@ -188,6 +188,22 @@ pub struct _ze_ipc_mem_handle_t {
     pub data: [::core::ffi::c_char; 64usize],
 }
 pub type ze_ipc_mem_handle_t = _ze_ipc_mem_handle_t;
+
+#[cfg(feature = "intel")]
+unsafe impl Send for ze_kernel_handle_t {}
+#[cfg(feature = "intel")]
+unsafe impl Sync for ze_kernel_handle_t {}
+
+#[cfg(feature = "intel")]
+unsafe impl Send for ze_command_queue_handle_t {}
+#[cfg(feature = "intel")]
+unsafe impl Sync for ze_command_queue_handle_t {}
+
+#[cfg(feature = "intel")]
+unsafe impl Send for ze_command_list_handle_t {}
+#[cfg(feature = "intel")]
+unsafe impl Sync for ze_command_list_handle_t {}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct _ze_ipc_event_pool_handle_t {

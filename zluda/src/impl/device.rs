@@ -52,14 +52,14 @@ pub(crate) fn get(device: *mut ze_device_handle_t, ordinal: i32) -> ze_result_t 
 
         // Get drivers
         let mut drivers = vec![ptr::null_mut(); driver_count as usize];
-        match zeDriverGet(&mut driver_count, drivers.as_mut_ptr()) {
+        match zeDriverGet(&mut driver_count, *drivers.as_mut_ptr()) {
             ze_result_t::ZE_RESULT_SUCCESS => {},
             e => return e,
         }
 
         // Get device count for the first driver
         let mut device_count = 0;
-        match zeDeviceGet(drivers[0], &mut device_count, ptr::null_mut()) {
+        match zeDeviceGet(*drivers[0], &mut device_count, ptr::null_mut()) {
             ze_result_t::ZE_RESULT_SUCCESS => {},
             e => return e,
         }
@@ -70,13 +70,13 @@ pub(crate) fn get(device: *mut ze_device_handle_t, ordinal: i32) -> ze_result_t 
 
         // Get devices
         let mut devices = vec![ptr::null_mut(); device_count as usize];
-        match zeDeviceGet(drivers[0], &mut device_count, devices.as_mut_ptr()) {
+        match zeDeviceGet(*drivers[0], &mut device_count, *devices.as_mut_ptr()) {
             ze_result_t::ZE_RESULT_SUCCESS => {},
             e => return e,
         }
 
         // Set the requested device
-        *device = devices[ordinal as usize];
+        *device = *devices[ordinal as usize];
 
         ze_result_t::ZE_RESULT_SUCCESS
     }
@@ -488,7 +488,7 @@ pub(crate) fn get_attribute(
             ze_result_t::ZE_RESULT_SUCCESS
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK => {
-            *pi = props.sharedLocalMemSize as i32;
+            *pi = props.maxMemAllocSize as i32;
             ze_result_t::ZE_RESULT_SUCCESS
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY => {
@@ -516,7 +516,7 @@ pub(crate) fn get_attribute(
             ze_result_t::ZE_RESULT_SUCCESS
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT => {
-            *pi = props.numEUs as i32;
+            *pi = props.numEUsPerSubslice as i32;
             ze_result_t::ZE_RESULT_SUCCESS
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT => {
@@ -624,7 +624,7 @@ pub(crate) fn get_attribute(
             ze_result_t::ZE_RESULT_SUCCESS
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR => {
-            *pi = props.sharedLocalMemSize as i32;
+            *pi = props.maxMemAllocSize as i32;
             ze_result_t::ZE_RESULT_SUCCESS
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_MULTIPROCESSOR => {
@@ -676,7 +676,7 @@ pub(crate) fn get_attribute(
             ze_result_t::ZE_RESULT_SUCCESS
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN => {
-            *pi = props.sharedLocalMemSize as i32;
+            *pi = props.maxMemAllocSize as i32;
             ze_result_t::ZE_RESULT_SUCCESS
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_HOST_REGISTER_SUPPORTED => {
@@ -724,7 +724,7 @@ pub(crate) fn get_uuid(uuid: *mut ze_device_uuid_t, device: ze_device_handle_t) 
     unsafe {
         ptr::copy_nonoverlapping(
             props.uuid.id.as_ptr(),
-            (*uuid).bytes.as_mut_ptr(),
+            (*uuid).id.as_mut_ptr(),
             16,
         );
     }
@@ -770,7 +770,7 @@ pub(crate) fn get_luid(
         luid.cast::<[i8; 8]>()
             .as_mut()
             .ok_or(ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT)
-    }?;
+    }.unwrap();
 
     let mut props: ze_device_properties_t = unsafe { mem::zeroed() };
     props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
@@ -914,11 +914,11 @@ pub(crate) fn get_properties(prop: &mut CUdevprop, dev: ze_device_handle_t) -> z
     prop.totalConstantMemory = clamp_usize(props.maxMemAllocSize as usize);
     prop.SIMDWidth = 32;
     prop.memPitch = clamp_usize(props.maxMemAllocSize as usize);
-    prop.regsPerBlock = props.maxRegistersPerEU as i32;
+    prop.regsPerBlock = props.numThreadsPerEU as i32;
     prop.clockRate = props.coreClockRate as i32;
     prop.textureAlign = 1;
 
-    Ok(())
+    ze_result_t::ZE_RESULT_SUCCESS
 }
 
 #[cfg(feature = "amd")]
@@ -944,14 +944,14 @@ pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> ze_result_t {
 
         // Get first driver
         let mut drivers = vec![ptr::null_mut(); driver_count as usize];
-        match zeDriverGet(&mut driver_count, drivers.as_mut_ptr()) {
+        match zeDriverGet(&mut driver_count, *drivers.as_mut_ptr()) {
             ze_result_t::ZE_RESULT_SUCCESS => {},
             e => return e,
         }
 
         // Get device count for the first driver
         let mut device_count = 0;
-        match zeDeviceGet(drivers[0], &mut device_count, ptr::null_mut()) {
+        match zeDeviceGet(*drivers[0], &mut device_count, ptr::null_mut()) {
             ze_result_t::ZE_RESULT_SUCCESS => {},
             e => return e,
         }
@@ -1088,10 +1088,9 @@ impl ZeResultExt for ze_result_t {
             ze_result_t::ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY => Err(CUerror::OUT_OF_MEMORY),
             ze_result_t::ZE_RESULT_ERROR_MODULE_BUILD_FAILURE => Err(CUerror::INVALID_PTX),
             ze_result_t::ZE_RESULT_ERROR_MODULE_LINK_FAILURE => Err(CUerror::INVALID_PTX),
-            ze_result_t::ZE_RESULT_ERROR_DEVICE_UNAVAILABLE => Err(CUerror::NO_DEVICE),
             ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT => Err(CUerror::INVALID_VALUE),
             ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_HANDLE => Err(CUerror::INVALID_HANDLE),
-            ze_result_t::ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE => Err(CUerror::IN_USE),
+            ze_result_t::ZE_RESULT_ERROR_HANDLE_OBJECT_IN_USE => Err(CUerror::INVALID_CONTEXT),
             ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_POINTER => Err(CUerror::INVALID_VALUE),
             ze_result_t::ZE_RESULT_ERROR_INVALID_SIZE => Err(CUerror::INVALID_VALUE),
             ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_SIZE => Err(CUerror::INVALID_VALUE),

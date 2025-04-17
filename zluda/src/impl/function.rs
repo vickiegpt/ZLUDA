@@ -22,83 +22,18 @@ pub(crate) fn get_attribute(
 #[cfg(feature = "intel")]
 pub(crate) fn get_attribute(
     pi: &mut i32,
-    cu_attrib: hipFunction_attribute,
+    mut cu_attrib: ze_kernel_properties_t,
     func: ze_kernel_handle_t,
-) -> hipError_t {
-    // Get kernel properties for Level Zero
-    let mut properties = ze_kernel_properties_t {
-        stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES,
-        pNext: ptr::null_mut(),
-        numKernelArgs: 0,
-        requiredGroupSizeX: 0,
-        requiredGroupSizeY: 0,
-        requiredGroupSizeZ: 0,
-        requiredNumSubGroups: 0,
-        requiredSubgroupSize: 0,
-        maxSubgroupSize: 0,
-        maxNumSubgroups: 0,
-        localMemSize: 0,
-        privateMemSize: 0,
-        spillMemSize: 0,
-        uuid: ze_kernel_uuid_t { id: [0; 16] },
-        name: [0; 256],
-    };
+) -> ze_result_t {
     
-    let result = unsafe { zeKernelGetProperties(func, &mut properties) };
+    let result = unsafe { zeKernelGetProperties(func, &mut cu_attrib) };
     if result != ze_result_t::ZE_RESULT_SUCCESS {
-        return hipError_t::hipErrorInvalidValue;
+        return result;
     }
     
-    match cu_attrib {
-        // Map CUDA attributes to Level Zero equivalents
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK => {
-            // Use a reasonable default or compute based on required group size
-            if properties.requiredGroupSizeX > 0 && properties.requiredGroupSizeY > 0 && properties.requiredGroupSizeZ > 0 {
-                *pi = (properties.requiredGroupSizeX * properties.requiredGroupSizeY * properties.requiredGroupSizeZ) as i32;
-            } else {
-                // Default to 1024 if not specified (similar to CUDA default)
-                *pi = 1024;
-            }
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES => {
-            *pi = properties.localMemSize as i32;
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_CONST_SIZE_BYTES => {
-            // No direct equivalent in Level Zero
-            *pi = 0;
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES => {
-            *pi = properties.privateMemSize as i32;
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_NUM_REGS => {
-            // No direct equivalent, use a reasonable default
-            *pi = 32;
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_PTX_VERSION => {
-            // This doesn't apply directly to Level Zero
-            *pi = 60; // SM 6.0 as default
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_BINARY_VERSION => {
-            // This doesn't apply directly to Level Zero
-            *pi = 60; // SM 6.0 as default
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_CACHE_MODE_CA => {
-            // No direct equivalent
-            *pi = 0;
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES => {
-            *pi = properties.localMemSize as i32;
-        }
-        hipFunction_attribute::HIP_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT => {
-            // No direct equivalent
-            *pi = 0;
-        }
-        _ => {
-            return hipError_t::hipErrorInvalidValue;
-        }
-    }
+    *pi = cu_attrib.localMemSize as i32;
     
-    Ok(())
+    ze_result_t::ZE_RESULT_SUCCESS
 }
 
 #[cfg(feature = "amd")]
@@ -134,7 +69,7 @@ pub(crate) fn launch_kernel(
 }
 
 #[cfg(feature = "intel")]
-pub(crate) fn launch_kernel(
+pub(crate) unsafe fn launch_kernel(
     f: ze_kernel_handle_t,
     grid_dim_x: ::core::ffi::c_uint,
     grid_dim_y: ::core::ffi::c_uint,
@@ -146,14 +81,14 @@ pub(crate) fn launch_kernel(
     stream: ze_command_queue_handle_t,
     kernel_params: *mut *mut ::core::ffi::c_void,
     extra: *mut *mut ::core::ffi::c_void,
-) -> hipError_t {
+) -> ze_result_t {
     // Set the group size (equivalent to CUDA block dimensions)
     let result = unsafe {
         zeKernelSetGroupSize(f, block_dim_x, block_dim_y, block_dim_z)
     };
     
     if result != ze_result_t::ZE_RESULT_SUCCESS {
-        return hipError_t::hipErrorInvalidConfiguration;
+        return result;
     }
     
     // Set arguments from kernel_params if provided
@@ -167,12 +102,12 @@ pub(crate) fn launch_kernel(
                 let result = zeKernelSetArgumentValue(
                     f,
                     param_index,
-                    std::mem::size_of::<*mut ::core::ffi::c_void>() as u32,
+                    std::mem::size_of::<*mut ::core::ffi::c_void>(),
                     param_value as *const ::core::ffi::c_void
                 );
                 
                 if result != ze_result_t::ZE_RESULT_SUCCESS {
-                    return hipError_t::hipErrorLaunchFailure;
+                    return result;
                 }
                 
                 param_index += 1;
@@ -213,7 +148,7 @@ pub(crate) fn launch_kernel(
     };
     
     if command_list.0.is_null() {
-        return hipError_t::hipErrorInvalidResourceHandle;
+        return ze_result_t::ZE_RESULT_ERROR_UNINITIALIZED;
     }
     
     // Prepare launch arguments for grid dimensions
@@ -229,14 +164,14 @@ pub(crate) fn launch_kernel(
             command_list,
             f,
             &dispatch_args,
-            ptr::null_mut(), // No event to wait on
+            *ptr::null_mut(), // No event to wait on
             0,               // No events to wait on
             ptr::null_mut(), // No event to signal
         )
     };
     
     if result != ze_result_t::ZE_RESULT_SUCCESS {
-        return hipError_t::hipErrorLaunchFailure;
+        return result;
     }
     
     // Close and execute the command list (in a real implementation, this might be deferred)
@@ -245,7 +180,7 @@ pub(crate) fn launch_kernel(
     };
     
     if result != ze_result_t::ZE_RESULT_SUCCESS {
-        return hipError_t::hipErrorLaunchFailure;
+        return result;
     }
     
     let result = unsafe {
@@ -254,12 +189,12 @@ pub(crate) fn launch_kernel(
             stream,
             1,
             &command_list,
-            ptr::null_mut(),
+            *ptr::null_mut(),
         )
     };
     
     if result != ze_result_t::ZE_RESULT_SUCCESS {
-        return hipError_t::hipErrorLaunchFailure;
+        return result;
     }
     
     // If this is a synchronous stream, synchronize immediately
@@ -271,11 +206,11 @@ pub(crate) fn launch_kernel(
         };
         
         if result != ze_result_t::ZE_RESULT_SUCCESS {
-            return hipError_t::hipErrorLaunchFailure;
+            return result;
         }
     }
     
-    Ok(())
+    ze_result_t::ZE_RESULT_SUCCESS
 }
 
 // Helper function to get or create a command list for a stream

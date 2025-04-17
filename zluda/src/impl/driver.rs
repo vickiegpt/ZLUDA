@@ -118,14 +118,14 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
             // Get drivers
             let mut drivers = vec![std::ptr::null_mut(); driver_count as usize];
             unsafe {
-                zeDriverGet(&mut driver_count, drivers.as_mut_ptr())
+                zeDriverGet(&mut driver_count, *drivers.as_mut_ptr())
                     .to_cuda_result(())?
             };
             
             // Get device count for the first driver
             let mut device_count = 0;
             unsafe {
-                zeDeviceGet(drivers[0], &mut device_count, std::ptr::null_mut())
+                zeDeviceGet(*drivers[0], &mut device_count, std::ptr::null_mut())
                     .to_cuda_result(())?
             };
             
@@ -136,12 +136,12 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
                 
                 // Get the devices
                 unsafe {
-                    zeDeviceGet(drivers[0], &mut device_count, devices.as_mut_ptr())
+                    zeDeviceGet(*drivers[0], &mut device_count, *devices.as_mut_ptr())
                         .to_cuda_result(())?;
                 }
                 
                 let device = if i < devices.len() as i32 {
-                    ze_device_handle_t(devices[i as usize])
+                    ze_device_handle_t(devices[i as usize] as *mut _)
                 } else {
                     return Err(CUerror::INVALID_DEVICE);
                 };
@@ -176,10 +176,13 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
                     primary_context: LiveCheck::new(ctx),
                 });
                 
-                // Store pointer in the device map
+                // 使用克隆，这样原始值不会被移动
+                let device_box_clone = Box::new(*device_box.clone());
+                
+                // 存储指针到设备映射
                 DEVICES_ZE.with(|map| {
                     let mut map = map.borrow_mut();
-                    let device_ptr = unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(*device_box))) };
+                    let device_ptr = unsafe { NonNull::new_unchecked(Box::into_raw(device_box_clone)) };
                     map.insert(device, device_ptr);
                 });
                 

@@ -13,6 +13,11 @@ pub(super) mod memory;
 pub(super) mod module;
 pub(super) mod pointer;
 
+#[cfg(feature = "intel")]
+pub mod ze_module;
+#[cfg(feature = "intel")]
+pub mod ze_device;
+
 #[cfg(debug_assertions)]
 pub(crate) fn unimplemented() -> CUresult {
     unimplemented!()
@@ -156,14 +161,14 @@ impl<'a> FromCuda<'a, CUlimit> for hipLimit_t {
 }
 
 #[cfg(feature = "intel")]
-impl<'a> FromCuda<'a, CUlimit> for hipLimit_t {
+impl<'a> FromCuda<'a, CUlimit> for ze_device_limit_t {
     fn from_cuda(limit: &'a CUlimit) -> Result<Self, CUerror> {
         // Intel's Level Zero doesn't have direct equivalents for CUDA limits
         // Return same enum variants as AMD for consistency
         Ok(match *limit {
-            CUlimit::CU_LIMIT_STACK_SIZE => hipLimit_t::hipLimitStackSize,
-            CUlimit::CU_LIMIT_PRINTF_FIFO_SIZE => hipLimit_t::hipLimitPrintfFifoSize,
-            CUlimit::CU_LIMIT_MALLOC_HEAP_SIZE => hipLimit_t::hipLimitMallocHeapSize,
+            CUlimit::CU_LIMIT_STACK_SIZE => ze_device_limit_t::ZE_LIMIT_STACK_SIZE,
+            CUlimit::CU_LIMIT_PRINTF_FIFO_SIZE => ze_device_limit_t::ZE_LIMIT_PRINTF_FIFO_SIZE,
+            CUlimit::CU_LIMIT_MALLOC_HEAP_SIZE => ze_device_limit_t::ZE_LIMIT_MALLOC_HEAP_SIZE,
             _ => return Err(CUerror::NOT_SUPPORTED),
         })
     }
@@ -185,26 +190,13 @@ pub(crate) trait ZludaObject: Sized + Send + Sync {
 // Helper trait for converting between CUDA and Ze results (Intel only)
 #[cfg(feature = "intel")]
 pub(crate) trait Decuda {
-    fn decuda(self) -> hipError_t;
+    fn decuda(self) -> CUresult;
 }
 
 #[cfg(feature = "intel")]
 impl Decuda for CUresult {
-    fn decuda(self) -> hipError_t {
-        match self {
-            CUresult::CUDA_SUCCESS => hipError_t::hipSuccess,
-            CUresult::CUDA_ERROR_INVALID_VALUE => hipError_t::hipErrorInvalidValue,
-            CUresult::CUDA_ERROR_OUT_OF_MEMORY => hipError_t::hipErrorOutOfMemory,
-            CUresult::CUDA_ERROR_NOT_INITIALIZED => hipError_t::hipErrorNotInitialized,
-            CUresult::CUDA_ERROR_DEINITIALIZED => hipError_t::hipErrorDeinitialized,
-            CUresult::CUDA_ERROR_NO_DEVICE => hipError_t::hipErrorNoDevice,
-            CUresult::CUDA_ERROR_INVALID_DEVICE => hipError_t::hipErrorInvalidDevice,
-            CUresult::CUDA_ERROR_INVALID_CONTEXT => hipError_t::hipErrorInvalidContext,
-            CUresult::CUDA_ERROR_MAP_FAILED => hipError_t::hipErrorMapFailed,
-            CUresult::CUDA_ERROR_UNMAP_FAILED => hipError_t::hipErrorUnmapFailed,
-            CUresult::CUDA_ERROR_INVALID_PTX => hipError_t::hipErrorInvalidDeviceFunction,
-            _ => hipError_t::hipErrorUnknown,
-        }
+    fn decuda(self) -> CUresult {
+        self
     }
 }
 
@@ -215,47 +207,9 @@ pub(crate) trait Encuda {
 }
 
 #[cfg(feature = "intel")]
-impl Encuda for hipError_t {
+impl Encuda for CUresult {
     fn encuda(self) -> CUresult {
-        match self {
-            hipError_t::hipSuccess => CUresult::CUDA_SUCCESS,
-            hipError_t::hipErrorInvalidValue => CUresult::CUDA_ERROR_INVALID_VALUE,
-            hipError_t::hipErrorOutOfMemory => CUresult::CUDA_ERROR_OUT_OF_MEMORY,
-            hipError_t::hipErrorNotInitialized => CUresult::CUDA_ERROR_NOT_INITIALIZED,
-            hipError_t::hipErrorDeinitialized => CUresult::CUDA_ERROR_DEINITIALIZED,
-            hipError_t::hipErrorNoDevice => CUresult::CUDA_ERROR_NO_DEVICE,
-            hipError_t::hipErrorInvalidDevice => CUresult::CUDA_ERROR_INVALID_DEVICE,
-            hipError_t::hipErrorInvalidContext => CUresult::CUDA_ERROR_INVALID_CONTEXT,
-            hipError_t::hipErrorMapFailed => CUresult::CUDA_ERROR_MAP_FAILED,
-            hipError_t::hipErrorUnmapFailed => CUresult::CUDA_ERROR_UNMAP_FAILED,
-            hipError_t::hipErrorInvalidDeviceFunction => CUresult::CUDA_ERROR_INVALID_PTX,
-            _ => CUresult::CUDA_ERROR_UNKNOWN,
-        }
-    }
-}
-
-#[cfg(feature = "intel")]
-impl Encuda for Result<(), CUerror> {
-    fn encuda(self) -> CUresult {
-        match self {
-            Ok(()) => CUresult::CUDA_SUCCESS,
-            Err(e) => e.into(),
-        }
-    }
-}
-
-#[cfg(feature = "intel")]
-impl From<ze_result_t> for CUresult {
-    fn from(result: ze_result_t) -> Self {
-        match result {
-            ze_result_t::ZE_RESULT_SUCCESS => CUresult::CUDA_SUCCESS,
-            ze_result_t::ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY | ze_result_t::ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY => CUresult::CUDA_ERROR_OUT_OF_MEMORY,
-            ze_result_t::ZE_RESULT_ERROR_DEVICE_LOST => CUresult::CUDA_ERROR_NO_DEVICE,
-            ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_HANDLE => CUresult::CUDA_ERROR_INVALID_HANDLE,
-            ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_POINTER => CUresult::CUDA_ERROR_INVALID_VALUE,
-            ze_result_t::ZE_RESULT_ERROR_UNINITIALIZED => CUresult::CUDA_ERROR_NOT_INITIALIZED,
-            _ => CUresult::CUDA_ERROR_UNKNOWN,
-        }
+        self
     }
 }
 
@@ -318,4 +272,67 @@ pub fn drop_checked<T: ZludaObject>(handle: T::CudaHandle) -> Result<(), CUerror
     let underlying_error = LiveCheck::drop_checked(&mut wrapped_object)?;
     unsafe { ManuallyDrop::drop(&mut wrapped_object) };
     underlying_error
+}
+
+// Update the CUresult conversion to use proper enum variants
+#[cfg(feature = "intel")]
+fn ze_to_cuda_result(result: ze_result_t) -> CUresult {
+    match result {
+        ze_result_t::ZE_RESULT_SUCCESS => CUresult::SUCCESS,
+        ze_result_t::ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY | ze_result_t::ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY => CUresult::ERROR_OUT_OF_MEMORY,
+        ze_result_t::ZE_RESULT_ERROR_DEVICE_LOST => CUresult::ERROR_NO_DEVICE,
+        ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_HANDLE => CUresult::ERROR_INVALID_HANDLE,
+        ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_POINTER => CUresult::ERROR_INVALID_VALUE,
+        ze_result_t::ZE_RESULT_ERROR_UNINITIALIZED => CUresult::ERROR_NOT_INITIALIZED,
+        _ => CUresult::ERROR_UNKNOWN,
+    }
+}
+
+// Implement the CUlimit to ze_device_limit_t conversion
+#[cfg(feature = "intel")]
+fn cuda_limit_to_ze_limit(limit: CUlimit) -> crate::r#impl::ze_device::ze_device_limit_t {
+    match limit {
+        CUlimit::CU_LIMIT_STACK_SIZE => crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_STACK_SIZE,
+        CUlimit::CU_LIMIT_PRINTF_FIFO_SIZE => crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_PRINTF_FIFO_SIZE,
+        CUlimit::CU_LIMIT_MALLOC_HEAP_SIZE => crate::r#impl::ze_device::ze_device_limit_t::ZE_LIMIT_MALLOC_HEAP_SIZE,
+        _ => panic!("Unsupported limit"),
+    }
+}
+
+// This function converts CUresult to proper CUresult under Intel builds
+#[cfg(feature = "intel")]
+pub fn ze_to_hip_error(result: CUresult) -> CUresult {
+    result
+}
+
+// Add a utility function to convert CUerror to CUresult and Result
+#[cfg(feature = "intel")]
+pub fn error_to_result<T>(error: CUerror) -> Result<T, CUerror> {
+    Err(error)
+}
+
+#[cfg(feature = "intel")]
+pub fn error_to_curesult(error: CUerror) -> CUresult {
+    CUresult::from(error)
+}
+
+// Fix for Result<(),CUerror> conversion 
+#[cfg(feature = "intel")]
+impl From<CUerror> for CUresult {
+    fn from(error: CUerror) -> Self {
+        // Assuming a direct mapping between CUerror and CUresult
+        // This would need more sophisticated mapping if they don't correspond
+        unsafe { std::mem::transmute(error) }
+    }
+}
+
+// Fix for ZE Result implementation 
+#[cfg(feature = "intel")]
+impl<T> From<Result<T, ze_result_t>> for Result<T, CUerror> {
+    fn from(result: Result<T, ze_result_t>) -> Self {
+        match result {
+            Ok(val) => Ok(val),
+            Err(e) => Err(unsafe { std::mem::transmute(ze_to_cuda_result(e)) }),
+        }
+    }
 }

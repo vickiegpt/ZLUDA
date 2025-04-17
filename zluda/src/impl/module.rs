@@ -37,7 +37,8 @@ pub(crate) struct Module {
     module: ze_module_handle_t,
     functions: Vec<(String, ze_kernel_handle_t)>,
 }
-
+unsafe impl Send for Module {}
+unsafe impl Sync for Module {}
 #[cfg(feature = "amd")]
 impl ZludaObject for Module {
     const COOKIE: usize = 0xe9138bd040487d4a;
@@ -68,7 +69,7 @@ impl ZludaObject for Module {
         // Destroy the module
         let result = unsafe { zeModuleDestroy(self.module) };
         if result != ze_result_t::ZE_RESULT_SUCCESS {
-            return result.into();
+            return ze_to_cuda_result(result);
         }
         
         Ok(())
@@ -105,12 +106,11 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         .to_str()
         .map_err(|_| CUerror::INVALID_VALUE)?;
     
-    let spirv_module = match load_data_impl(module, SpirvModule::new(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?) {
-        Ok(()) => return CUresult::CUDA_SUCCESS,
-        Err(e) => return e.into(),
-    };
-    
-    Ok(())
+    let spirv_module = SpirvModule::new(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
+    match load_data_impl(module, spirv_module) {
+        Ok(()) => CUresult::SUCCESS,
+        Err(e) => e.into(),
+    }
 }
 
 #[cfg(feature = "intel")]
@@ -122,12 +122,12 @@ pub(crate) fn load_data_impl(module: &mut CUmodule, spirv_module: SpirvModule) -
     let spirv_binary = ptx_to_spirv(&spirv_module)?;
     
     // Create module descriptor
-    let mut module_desc = ze_module_desc_t {
+    let module_desc = ze_module_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_MODULE_DESC,
         pNext: ptr::null(),
         format: ze_module_format_t::ZE_MODULE_FORMAT_IL_SPIRV,
-        inputSize: spirv_binary.len() as usize,
-        pInputModule: spirv_binary.as_ptr() as *const c_void,
+        inputSize: spirv_binary.len(),
+        pInputModule: spirv_binary.as_ptr(),
         pBuildFlags: ptr::null(),
         pConstants: ptr::null(),
     };
@@ -141,7 +141,7 @@ pub(crate) fn load_data_impl(module: &mut CUmodule, spirv_module: SpirvModule) -
             context,
             device,
             &module_desc,
-            &mut ze_module,
+             ze_module,
             &mut build_log,
         )
     };
@@ -161,10 +161,10 @@ pub(crate) fn load_data_impl(module: &mut CUmodule, spirv_module: SpirvModule) -
     
     // Create and return the Module object
     *module = Module { 
-        context, 
-        device, 
-        module: ze_module_handle_t(ze_module),
-        functions 
+        context: unsafe { *context }, 
+        device: unsafe { *device }, 
+        module: unsafe { *ze_module },
+        functions
     }.wrap();
     
     Ok(())
@@ -217,49 +217,101 @@ pub(crate) fn get_function(
 
 #[cfg(feature = "intel")]
 pub(crate) fn get_function(
-    hfunc: &mut ze_kernel_handle_t,
+    hfunc: &mut CUfunction,
     hmod: &Module,
     name: *const ::core::ffi::c_char,
-) -> hipError_t {
-    let name_str = unsafe { CStr::from_ptr(name) }.to_str()
-        .map_err(|_| hipError_t::hipErrorInvalidValue)?;
+) -> CUresult {
+    let name_str = unsafe { CStr::from_ptr(name) }
+        .to_str()
+        .map_err(|_| CUerror::INVALID_VALUE)?;
     
-    // Check if we already have this kernel cached
-    for (func_name, kernel) in &hmod.functions {
-        if func_name == name_str {
-            *hfunc = *kernel;
-            return hipError_t::hipSuccess;
-        }
+    // Check if kernel already exists
+    if let Some((_, kernel)) = hmod.functions.iter().find(|(n, _)| n == name_str) {
+        *hfunc = ZeKernel { 
+            context: hmod.context,
+            device: hmod.device,
+            module: hmod.module,
+            kernel: *kernel
+        }.wrap();
+        return CUresult::SUCCESS;
     }
     
-    // Create a new kernel if not found
+    // Create new kernel
     let mut kernel = ptr::null_mut();
+    let kernel_desc = ze_kernel_desc_t {
+        stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_DESC,
+        pNext: ptr::null(),
+        flags: 0,
+        pKernelName: name,
+    };
+    
     let result = unsafe {
         zeKernelCreate(
             hmod.module,
-            &ze_kernel_desc_t {
-                stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_KERNEL_DESC,
-                pNext: ptr::null(),
-                flags: 0,
-                pKernelName: name,
-            },
+            &kernel_desc,
             &mut kernel,
         )
     };
     
-    if result != ze_result_t::ZE_RESULT_SUCCESS {
-        return match result {
-            ze_result_t::ZE_RESULT_ERROR_INVALID_KERNEL_NAME => hipError_t::hipErrorInvalidSymbol,
-            _ => hipError_t::hipErrorInvalidValue,
-        };
+    match result {
+        ze_result_t::ZE_RESULT_SUCCESS => {
+            let kernel_wrapper = ZeKernel {
+                context: hmod.context,
+                device: hmod.device,
+                module: hmod.module,
+                kernel: unsafe { *kernel }
+            };
+
+            // Store the kernel in the module's function list
+            let mut module_mut = hmod as *const Module as *mut Module;
+            unsafe {
+                (*module_mut).functions.push((name_str.to_string(), *kernel));
+            }
+            
+            *hfunc = kernel_wrapper.wrap();
+            CUresult::SUCCESS
+        }
+        ze_result_t::ZE_RESULT_ERROR_INVALID_KERNEL_NAME => CUresult::ERROR_INVALID_IMAGE,
+        _ => CUresult::ERROR_INVALID_VALUE,
     }
-    
-    // Add to our cache
-    let kernel_handle = ze_kernel_handle_t(kernel);
-    if let Module { functions, .. } = hmod {
-        functions.push((name_str.to_string(), kernel_handle));
+}
+
+#[cfg(feature = "intel")]
+pub(crate) struct ZeKernel {
+    pub context: ze_context_handle_t,
+    pub device: ze_device_handle_t,
+    pub module: ze_module_handle_t,
+    pub kernel: ze_kernel_handle_t,
+}
+#[cfg(feature = "intel")]
+unsafe impl Send for ZeKernel {}
+#[cfg(feature = "intel")]
+unsafe impl Sync for ZeKernel {}
+#[cfg(feature = "intel")]
+impl ZludaObject for ZeKernel {
+    const COOKIE: usize = 0xad74ceadb9b2d51c;
+
+    type CudaHandle = CUfunction;
+
+    fn drop_checked(&mut self) -> CUresult {
+        let result = unsafe { zeKernelDestroy(self.kernel) };
+        if result != ze_result_t::ZE_RESULT_SUCCESS {
+            return ze_to_cuda_result(result);
+        }
+        Ok(())
     }
-    
-    *hfunc = kernel_handle;
-    hipError_t::hipSuccess
+}
+
+#[cfg(feature = "intel")]
+fn ze_to_cuda_result(result: ze_result_t) -> CUresult {
+    match result {
+        ze_result_t::ZE_RESULT_SUCCESS => CUresult::SUCCESS,
+        ze_result_t::ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY |
+        ze_result_t::ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY => CUresult::ERROR_OUT_OF_MEMORY,
+        ze_result_t::ZE_RESULT_ERROR_DEVICE_LOST => CUresult::ERROR_NO_DEVICE,
+        ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_HANDLE => CUresult::ERROR_INVALID_HANDLE,
+        ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_POINTER => CUresult::ERROR_INVALID_VALUE,
+        ze_result_t::ZE_RESULT_ERROR_UNINITIALIZED => CUresult::ERROR_NOT_INITIALIZED,
+        _ => CUresult::ERROR_UNKNOWN,
+    }
 }

@@ -1,14 +1,14 @@
 use super::{driver, FromCuda, ZludaObject};
 use cuda_types::cuda::*;
-#[cfg(feature = "intel")]
-use ze_runtime_sys::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
 use rustc_hash::FxHashSet;
-use std::{cell::RefCell, ptr, sync::Mutex};
 use std::ffi::c_uint;
 #[cfg(feature = "intel")]
 use std::os::raw::c_void;
+use std::{cell::RefCell, ptr, sync::Mutex};
+#[cfg(feature = "intel")]
+use ze_runtime_sys::*;
 
 // 添加Result转换特性，用于ze_result_t到CUerror的转换
 #[cfg(feature = "intel")]
@@ -73,13 +73,13 @@ impl Context {
     pub(crate) fn get_device(&self) -> hipDevice_t {
         self.device
     }
-    
+
     pub(crate) fn increment_ref_count(&self) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.ref_count += 1;
         }
     }
-    
+
     pub(crate) fn decrement_ref_count(&self) -> usize {
         if let Ok(mut mutable) = self.mutable.lock() {
             if mutable.ref_count > 0 {
@@ -90,13 +90,13 @@ impl Context {
             0
         }
     }
-    
+
     pub(crate) fn add_memory(&self, ptr: hipDeviceptr_t) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._memory.insert(ptr);
         }
     }
-    
+
     pub(crate) fn remove_memory(&self, ptr: hipDeviceptr_t) -> bool {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._memory.remove(&ptr)
@@ -104,13 +104,13 @@ impl Context {
             false
         }
     }
-    
+
     pub(crate) fn add_stream(&self, stream: hipStream_t) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._streams.insert(stream);
         }
     }
-    
+
     pub(crate) fn remove_stream(&self, stream: hipStream_t) -> bool {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._streams.remove(&stream)
@@ -118,13 +118,13 @@ impl Context {
             false
         }
     }
-    
+
     pub(crate) fn add_module(&self, module: CUmodule) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._modules.insert(module);
         }
     }
-    
+
     pub(crate) fn remove_module(&self, module: CUmodule) -> bool {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._modules.remove(&module)
@@ -178,11 +178,11 @@ pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
             }
         })
     };
-    
+
     if let Some(dev) = new_device {
         unsafe { hipSetDevice(dev)? };
     }
-    
+
     Ok(())
 }
 
@@ -220,7 +220,8 @@ pub(crate) struct Context {
     pub(crate) context: ze_context_handle_t,
     pub(crate) mutable: Mutex<OwnedByContext>,
 }
-
+unsafe impl Send for Context {}
+unsafe impl Sync for Context {}
 #[cfg(feature = "intel")]
 pub(crate) struct OwnedByContext {
     pub(crate) ref_count: usize,
@@ -246,68 +247,60 @@ impl Context {
             }),
         }
     }
-    
+
     pub(crate) fn initialize(&mut self) -> Result<(), CUerror> {
         if !self.context.0.is_null() {
             return Ok(());
         }
-        
+
         // Initialize Level Zero
-        unsafe { zeInit(0) }
-            .to_cuda_result(())?;
-        
+        unsafe { zeInit(0) }.to_cuda_result(())?;
+
         // Get driver for this device
         let mut driver_count = 0;
-        unsafe { 
-            zeDriverGet(&mut driver_count, std::ptr::null_mut())
-                .to_cuda_result(())?
-        };
-        
+        unsafe { zeDriverGet(&mut driver_count, std::ptr::null_mut()).to_cuda_result(())? };
+
         let mut drivers = vec![std::ptr::null_mut(); driver_count as usize];
-        unsafe {
-            zeDriverGet(&mut driver_count, *drivers.as_mut_ptr())
-                .to_cuda_result(())?
-        };
-        
+        unsafe { zeDriverGet(&mut driver_count, *drivers.as_mut_ptr()).to_cuda_result(())? };
+
         // Create context descriptor
         let mut context_desc = ze_context_desc_t {
             stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_CONTEXT_DESC,
             pNext: std::ptr::null(),
             flags: 0,
         };
-        
+
         let mut context = std::ptr::null_mut();
-        
+
         // Create context for the device
         unsafe {
-            zeContextCreate(*drivers[0], &mut context_desc, *&mut context)
-                .to_cuda_result(())?;
-            
-            self.context = ze_context_handle_t(context);
+            zeContextCreate(*drivers[0], &mut context_desc, *&mut context).to_cuda_result(())?;
+
+            self.context = *context;
         }
-        
+
         // Initialize the reference count to 1 for the primary context
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.ref_count = 1;
         }
-        
+
         Ok(())
     }
-    
+
     pub(crate) fn get_device(&self) -> ze_device_handle_t {
         self.device
     }
-    
+
     pub(crate) fn get_context(&self) -> ze_context_handle_t {
         self.context
     }
-    
+
     pub(crate) fn increment_ref_count(&self) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.ref_count += 1;
         }
     }
-    
+
     pub(crate) fn decrement_ref_count(&self) -> usize {
         if let Ok(mut mutable) = self.mutable.lock() {
             if mutable.ref_count > 0 {
@@ -318,13 +311,13 @@ impl Context {
             0
         }
     }
-    
+
     pub(crate) fn add_module(&self, module: ze_module_handle_t) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._modules.insert(module);
         }
     }
-    
+
     pub(crate) fn remove_module(&self, module: ze_module_handle_t) -> bool {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._modules.remove(&module)
@@ -332,13 +325,13 @@ impl Context {
             false
         }
     }
-    
+
     pub(crate) fn add_command_queue(&self, queue: ze_command_queue_handle_t) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._command_queues.insert(queue);
         }
     }
-    
+
     pub(crate) fn remove_command_queue(&self, queue: ze_command_queue_handle_t) -> bool {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._command_queues.remove(&queue)
@@ -346,13 +339,13 @@ impl Context {
             false
         }
     }
-    
+
     pub(crate) fn add_command_list(&self, list: ze_command_list_handle_t) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._command_lists.insert(list);
         }
     }
-    
+
     pub(crate) fn remove_command_list(&self, list: ze_command_list_handle_t) -> bool {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._command_lists.remove(&list)
@@ -360,13 +353,13 @@ impl Context {
             false
         }
     }
-    
+
     pub(crate) fn add_allocation(&self, ptr: *mut c_void) {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._allocations.insert(ptr);
         }
     }
-    
+
     pub(crate) fn remove_allocation(&self, ptr: *mut c_void) -> bool {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable._allocations.remove(&ptr)
@@ -374,39 +367,34 @@ impl Context {
             false
         }
     }
-    
+
     pub(crate) fn destroy(&self) -> Result<(), CUerror> {
         // Destroy all tracked resources
         if let Ok(mutable) = self.mutable.lock() {
             // Clean up modules
             for module in &mutable._modules {
-                unsafe { zeModuleDestroy(*module) }
-                    .to_cuda_result(())?;
+                unsafe { zeModuleDestroy(*module) }.to_cuda_result(())?;
             }
-            
+
             // Clean up command lists
             for cmd_list in &mutable._command_lists {
-                unsafe { zeCommandListDestroy(*cmd_list) }
-                    .to_cuda_result(())?;
+                unsafe { zeCommandListDestroy(*cmd_list) }.to_cuda_result(())?;
             }
-            
+
             // Clean up command queues
             for queue in &mutable._command_queues {
-                unsafe { zeCommandQueueDestroy(*queue) }
-                    .to_cuda_result(())?;
-            }   
-            
+                unsafe { zeCommandQueueDestroy(*queue) }.to_cuda_result(())?;
+            }
+
             // Free memory allocations
             for allocation in &mutable._allocations {
-                unsafe { zeMemFree(self.context, *allocation) }
-                    .to_cuda_result(())?;
+                unsafe { zeMemFree(self.context, *allocation) }.to_cuda_result(())?;
             }
         }
-        
+
         // Destroy context
-        unsafe { zeContextDestroy(self.context) }
-            .to_cuda_result(())?;
-        
+        unsafe { zeContextDestroy(self.context) }.to_cuda_result(())?;
+
         Ok(())
     }
 }
@@ -432,26 +420,24 @@ pub(crate) fn synchronize() -> ze_result_t {
         Some(ctx) => ctx,
         None => return ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT,
     };
-    
+
     // Get Context from CUcontext
     let ze_ctx = match from_cuda_to(&ctx) {
         Ok(ctx) => ctx,
         Err(_) => return ze_result_t::ZE_RESULT_ERROR_INVALID_ARGUMENT,
     };
-    
+
     // For full synchronization, synchronize all command queues
     if let Ok(mutable) = ze_ctx.mutable.lock() {
         for queue in &mutable._command_queues {
-            let result = unsafe { 
-                zeCommandQueueSynchronize(*queue, u64::MAX) 
-            };
-            
+            let result = unsafe { zeCommandQueueSynchronize(*queue, u64::MAX) };
+
             if result != ze_result_t::ZE_RESULT_SUCCESS {
                 return ze_result_t::ZE_RESULT_ERROR_UNKNOWN;
             }
         }
     }
-    
+
     ze_result_t::ZE_RESULT_SUCCESS
 }
 
@@ -466,20 +452,19 @@ impl<'a> FromCuda<'a, CUcontext> for &'a Context {
         if cuda_handle.0.is_null() {
             return Err(CUerror::INVALID_CONTEXT);
         }
-        
+
         let raw_handle = cuda_handle.0 as *const u8;
         let magic_cookie_offset = std::mem::size_of::<usize>();
         let cookie = unsafe { *(raw_handle.add(magic_cookie_offset) as *const usize) };
-        
+
         if cookie != <Context as ZludaObject>::COOKIE {
             return Err(CUerror::INVALID_HANDLE);
         }
-        
+
         // Cast the handle to our internal type, using the appropriate offset
-        let context = unsafe {
-            &*(raw_handle.add(std::mem::size_of::<usize>() * 2) as *const Context)
-        };
-        
+        let context =
+            unsafe { &*(raw_handle.add(std::mem::size_of::<usize>() * 2) as *const Context) };
+
         Ok(context)
     }
 }
@@ -510,10 +495,10 @@ pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
             }
         })
     };
-    
+
     // No direct equivalent to hipSetDevice in Level Zero
     // Device switching would be handled at command queue/list creation
-    
+
     Ok(())
 }
 
@@ -526,103 +511,134 @@ pub(crate) fn push(ctx: CUcontext, device: ze_device_handle_t) {
 }
 
 #[cfg(feature = "intel")]
-pub(crate) fn get_device_properties(device: ze_device_handle_t) -> Result<ze_device_properties_t, CUerror> {
+pub(crate) fn get_device_properties(
+    device: ze_device_handle_t,
+) -> Result<ze_device_properties_t, CUerror> {
     let mut props: ze_device_properties_t = unsafe { std::mem::zeroed() };
     props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
-    
-    unsafe { zeDeviceGetProperties(device, &mut props) }
-        .to_cuda_result(props)?;
-    
+
+    unsafe { zeDeviceGetProperties(device, &mut props) }.to_cuda_result(props)?;
+
     Ok(props)
 }
 
 // Intel Level Zero memory management functions
 #[cfg(feature = "intel")]
-pub(crate) fn ze_malloc(size: usize, alignment: usize, ze_ctx: &Context) -> Result<*mut c_void, CUerror> {
+pub(crate) fn ze_malloc(
+    size: usize,
+    alignment: usize,
+    ze_ctx: &Context,
+) -> Result<*mut c_void, CUerror> {
     let mut device_desc = ze_device_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC,
         pNext: ptr::null(),
         flags: 0,
         ordinal: 0,
     };
-    
+
     let mut ptr = ptr::null_mut();
     unsafe {
-        zeMemAllocDevice(ze_ctx.context, &device_desc, size, alignment, ze_ctx.device, &mut ptr)
-            .to_cuda_result(())?;
+        zeMemAllocDevice(
+            ze_ctx.context,
+            &device_desc,
+            size,
+            alignment,
+            ze_ctx.device,
+            &mut ptr,
+        )
+        .to_cuda_result(())?;
     }
-    
+
     // Track the allocation
     ze_ctx.add_allocation(ptr);
-    
+
     Ok(ptr)
 }
 
 #[cfg(feature = "intel")]
-pub(crate) fn ze_malloc_host(size: usize, alignment: usize, ze_ctx: &Context) -> Result<*mut c_void, CUerror> {
+pub(crate) fn ze_malloc_host(
+    size: usize,
+    alignment: usize,
+    ze_ctx: &Context,
+) -> Result<*mut c_void, CUerror> {
     let mut host_desc = ze_host_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC,
         pNext: ptr::null(),
         flags: 0,
     };
-    
+
     let mut ptr = ptr::null_mut();
     unsafe {
-        zeMemAllocHost(ze_ctx.context, &host_desc, size, alignment, &mut ptr)
-            .to_cuda_result(())?;
+        zeMemAllocHost(ze_ctx.context, &host_desc, size, alignment, &mut ptr).to_cuda_result(())?;
     }
-    
+
     // Track the allocation
     ze_ctx.add_allocation(ptr);
-    
+
     Ok(ptr)
 }
 
 #[cfg(feature = "intel")]
-pub(crate) fn ze_malloc_shared(size: usize, alignment: usize, ze_ctx: &Context) -> Result<*mut c_void, CUerror> {
+pub(crate) fn ze_malloc_shared(
+    size: usize,
+    alignment: usize,
+    ze_ctx: &Context,
+) -> Result<*mut c_void, CUerror> {
     let mut device_desc = ze_device_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC,
         pNext: ptr::null(),
         flags: 0,
         ordinal: 0,
     };
-    
+
     let mut host_desc = ze_host_mem_alloc_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC,
         pNext: ptr::null(),
         flags: 0,
     };
-    
+
     let mut ptr = ptr::null_mut();
     unsafe {
-        zeMemAllocShared(ze_ctx.context, &device_desc, &host_desc, size, alignment, ze_ctx.device, &mut ptr)
-            .to_cuda_result(())?;
+        zeMemAllocShared(
+            ze_ctx.context,
+            &device_desc,
+            &host_desc,
+            size,
+            alignment,
+            ze_ctx.device,
+            &mut ptr,
+        )
+        .to_cuda_result(())?;
     }
-    
+
     // Track the allocation
     ze_ctx.add_allocation(ptr);
-    
+
     Ok(ptr)
 }
 
 #[cfg(feature = "intel")]
 pub(crate) fn ze_free(ptr: *mut c_void, ze_ctx: &Context) -> Result<(), CUerror> {
     unsafe {
-        zeMemFree(ze_ctx.context, ptr)
-            .to_cuda_result(())?;
+        zeMemFree(ze_ctx.context, ptr).to_cuda_result(())?;
     }
-    
+
     // Remove from tracked allocations
     ze_ctx.remove_allocation(ptr);
-    
+
     Ok(())
 }
 
 #[cfg(feature = "intel")]
-pub(crate) fn ze_memcpy(dst: *mut c_void, src: *const c_void, size: usize, ze_ctx: &Context) -> Result<(), CUerror> {
+pub(crate) fn ze_memcpy(
+    dst: *mut c_void,
+    src: *const c_void,
+    size: usize,
+    ze_ctx: &Context,
+) -> Result<(), CUerror> {
     // Get or create a command list for the copy operation
     let command_list = ze_get_command_list(ze_ctx)?;
-    
+
     unsafe {
         // Append copy to command list
         zeCommandListAppendMemoryCopy(
@@ -633,12 +649,12 @@ pub(crate) fn ze_memcpy(dst: *mut c_void, src: *const c_void, size: usize, ze_ct
             *ptr::null_mut(),
             0,
             &mut ze_event_handle_t(ptr::null_mut()),
-        ).to_cuda_result(())?;
-        
+        )
+        .to_cuda_result(())?;
+
         // Close the command list
-        zeCommandListClose(command_list)
-            .to_cuda_result(())?;
-        
+        zeCommandListClose(command_list).to_cuda_result(())?;
+
         // Execute the command list
         let command_queue = ze_get_command_queue(ze_ctx)?;
         zeCommandQueueExecuteCommandLists(
@@ -646,21 +662,26 @@ pub(crate) fn ze_memcpy(dst: *mut c_void, src: *const c_void, size: usize, ze_ct
             1,
             &command_list,
             ze_fence_handle_t(ptr::null_mut()),
-        ).to_cuda_result(())?;
-        
+        )
+        .to_cuda_result(())?;
+
         // Synchronize the command queue
-        zeCommandQueueSynchronize(command_queue, u64::MAX)
-            .to_cuda_result(())?;
+        zeCommandQueueSynchronize(command_queue, u64::MAX).to_cuda_result(())?;
     }
-    
+
     Ok(())
 }
 
 #[cfg(feature = "intel")]
-pub(crate) fn ze_memset(dst: *mut c_void, value: i32, size: usize, ze_ctx: &Context) -> Result<(), CUerror> {
+pub(crate) fn ze_memset(
+    dst: *mut c_void,
+    value: i32,
+    size: usize,
+    ze_ctx: &Context,
+) -> Result<(), CUerror> {
     // Get or create a command list for the set operation
     let command_list = ze_get_command_list(ze_ctx)?;
-    
+
     unsafe {
         // Append fill to command list
         zeCommandListAppendMemoryFill(
@@ -671,13 +692,13 @@ pub(crate) fn ze_memset(dst: *mut c_void, value: i32, size: usize, ze_ctx: &Cont
             size,
             *ptr::null_mut(),
             0,
-            & mut ze_event_handle_t(ptr::null_mut()),
-        ).to_cuda_result(())?;
-        
+            &mut ze_event_handle_t(ptr::null_mut()),
+        )
+        .to_cuda_result(())?;
+
         // Close the command list
-        zeCommandListClose(command_list)
-            .to_cuda_result(())?;
-        
+        zeCommandListClose(command_list).to_cuda_result(())?;
+
         // Execute the command list
         let command_queue = ze_get_command_queue(ze_ctx)?;
         zeCommandQueueExecuteCommandLists(
@@ -685,13 +706,13 @@ pub(crate) fn ze_memset(dst: *mut c_void, value: i32, size: usize, ze_ctx: &Cont
             1,
             &command_list,
             ze_fence_handle_t(ptr::null_mut()),
-        ).to_cuda_result(())?;
-        
+        )
+        .to_cuda_result(())?;
+
         // Synchronize the command queue
-        zeCommandQueueSynchronize(command_queue, u64::MAX)
-            .to_cuda_result(())?;
+        zeCommandQueueSynchronize(command_queue, u64::MAX).to_cuda_result(())?;
     }
-    
+
     Ok(())
 }
 
@@ -699,14 +720,14 @@ pub(crate) fn ze_memset(dst: *mut c_void, value: i32, size: usize, ze_ctx: &Cont
 fn ze_get_command_list(ze_ctx: &Context) -> Result<ze_command_list_handle_t, CUerror> {
     // In a real implementation, you might maintain a pool of command lists
     // or reuse existing ones, but for simplicity we create a new one
-    
+
     let mut cmd_list_desc = ze_command_list_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC,
         pNext: ptr::null(),
         commandQueueGroupOrdinal: 0, // Use default queue group
         flags: 0,
     };
-    
+
     let mut command_list = ptr::null_mut();
     unsafe {
         zeCommandListCreate(
@@ -714,14 +735,15 @@ fn ze_get_command_list(ze_ctx: &Context) -> Result<ze_command_list_handle_t, CUe
             ze_ctx.device,
             &mut cmd_list_desc,
             *&mut command_list,
-        ).to_cuda_result(())?;
+        )
+        .to_cuda_result(())?;
     }
-    
-    let handle = ze_command_list_handle_t(command_list);
-    
+
+    let handle = unsafe { *command_list };
+
     // Track the command list
     ze_ctx.add_command_list(handle);
-    
+
     Ok(handle)
 }
 
@@ -729,7 +751,7 @@ fn ze_get_command_list(ze_ctx: &Context) -> Result<ze_command_list_handle_t, CUe
 fn ze_get_command_queue(ze_ctx: &Context) -> Result<ze_command_queue_handle_t, CUerror> {
     // In a real implementation, you might maintain a pool of command queues
     // or reuse existing ones, but for simplicity we create a new one
-    
+
     let mut queue_desc = ze_command_queue_desc_t {
         stype: ze_structure_type_t::ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
         pNext: ptr::null(),
@@ -739,7 +761,7 @@ fn ze_get_command_queue(ze_ctx: &Context) -> Result<ze_command_queue_handle_t, C
         mode: ze_command_queue_mode_t::ZE_COMMAND_QUEUE_MODE_DEFAULT,
         priority: ze_command_queue_priority_t::ZE_COMMAND_QUEUE_PRIORITY_NORMAL,
     };
-    
+
     let mut command_queue = ptr::null_mut();
     unsafe {
         zeCommandQueueCreate(
@@ -747,30 +769,34 @@ fn ze_get_command_queue(ze_ctx: &Context) -> Result<ze_command_queue_handle_t, C
             ze_ctx.device,
             &mut queue_desc,
             *&mut command_queue,
-        ).to_cuda_result(())?;
+        )
+        .to_cuda_result(())?;
     }
-    
-    let handle = ze_command_queue_handle_t(command_queue);
-    
+
+    let handle = unsafe { *command_queue };
+
     // Track the command queue
     ze_ctx.add_command_queue(handle);
-    
+
     Ok(handle)
 }
 
 #[cfg(feature = "intel")]
-pub(crate) fn get_current_ze<'a>() -> Result<&'a Context, CUerror> {
-    if let Some(ctx) = get_current() {
-        from_cuda_to(&ctx)
-    } else {
-        Err(CUerror::INVALID_CONTEXT)
-    }
+pub(crate) fn get_current_ze() -> Result<&'static Context, CUerror> {
+    CONTEXT_STACK.with(|stack| {
+        stack
+            .borrow()
+            .last()
+            .copied()
+            .unwrap_or_default()
+            .0
+    })
 }
 
 #[cfg(feature = "intel")]
-pub(crate) fn get_primary_ze(device: ze_device_handle_t) -> Result<(&'static Context, CUcontext), CUerror> {
+pub(crate) fn get_primary_ze(
+    device: ze_device_handle_t,
+) -> Result<(&'static Context, CUcontext), CUerror> {
     let dev = driver::device_ze(device)?;
     Ok(dev.primary_context())
 }
-
-
