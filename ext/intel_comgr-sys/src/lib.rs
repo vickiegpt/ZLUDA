@@ -11,6 +11,7 @@ pub const INTEL_COMGR_INTERFACE_VERSION_MAJOR: u32 = 1;
 pub const INTEL_COMGR_INTERFACE_VERSION_MINOR: u32 = 0;
 
 // Status types
+#[derive(Debug, Clone, Copy)]
 pub struct intel_comgr_status_s(pub NonZeroU32);
 pub type intel_comgr_status_t = Result<(), self::intel_comgr_status_s>;
 

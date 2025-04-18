@@ -9,6 +9,7 @@ name = "nvcuda"
 crate-type = ["cdylib"]
 
 [features]
+default = ["intel"]
 intel = []
 amd = []
 

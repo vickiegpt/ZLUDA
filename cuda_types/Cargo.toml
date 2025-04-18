@@ -5,6 +5,7 @@ authors = ["Andrzej Janik <vosen@vosen.pl>"]
 edition = "2018"
 
 [features]
+default = ["intel"]
 intel = []
 amd = []
 
