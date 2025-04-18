@@ -5,8 +5,8 @@ authors = ["Andrzej Janik <vosen@vosen.pl>"]
 edition = "2021"
 
 [features]
-amd =[]
-intel =[]
+amd = []
+intel = []
 
 [lib]
 

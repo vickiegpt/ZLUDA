@@ -1,5 +1,8 @@
 use crate::pass;
+#[cfg(feature = "amd")]
 use hip_runtime_sys::hipError_t;
+#[cfg(feature = "intel")]
+use ze_runtime_sys::ze_result_t;
 use std::error;
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -216,10 +219,14 @@ fn test_hip_assert<
     output: &mut [Output],
 ) -> Result<(), Box<dyn error::Error + 'a>> {
     let ast = ptx_parser::parse_module_checked(ptx_text).unwrap();
-    let llvm_ir = pass::to_llvm_module(&ast).unwrap();
+    let llvm_ir = pass::to_llvm_module(ast).unwrap();
     let name = CString::new(name)?;
+    #[cfg(feature = "amd")]
     let result =
         run_hip(name.as_c_str(), llvm_ir, input, output).map_err(|err| DisplayError { err })?;
+    #[cfg(feature = "intel")]
+    let result =
+        run_ze(name.as_c_str(), llvm_ir, input, output).map_err(|err| DisplayError { err })?;
     assert_eq!(result.as_slice(), output);
     Ok(())
 }
@@ -370,21 +377,20 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     output: &mut [Output],
 ) -> Result<Vec<Output>, ze_runtime_sys::ze_result_t> {
     use ze_runtime_sys::*;
-    unsafe { zeInit(0) }?;
+    unsafe { zeInit(0) };
     let mut result = vec![0u8.into(); output.len()];
     
     unsafe {
         // Get driver
         let mut driver_count = 0;
-        zeDriverGet(&mut driver_count, ptr::null_mut())?;
-        let mut drivers = vec![ptr::null_mut(); driver_count as usize];
-        zeDriverGet(&mut driver_count, drivers.as_mut_ptr())?;
+        zeDriverGet(&mut driver_count, &mut ze_runtime_sys::ze_driver_handle_t(ptr::null_mut()));
+        let mut drivers = vec![ze_runtime_sys::ze_driver_handle_t(ptr::null_mut()); driver_count as usize];
+        zeDriverGet(&mut driver_count, drivers.as_mut_ptr());
         
         // Get device
         let mut device_count = 0;
-        zeDeviceGet(drivers[0], &mut device_count, ptr::null_mut())?;
-        let mut devices = vec![ptr::null_mut(); device_count as usize];
-        zeDeviceGet(drivers[0], &mut device_count, devices.as_mut_ptr())?;
+        let mut devices = vec![ze_runtime_sys::ze_device_handle_t(ptr::null_mut()); device_count as usize];
+        zeDeviceGet(drivers[0], &mut device_count, devices.as_mut_ptr());
         
         // Create context
         let mut context_desc = ze_context_desc_t {
@@ -393,7 +399,7 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             flags: 0,
         };
         let mut context = ptr::null_mut();
-        zeContextCreate(drivers[0], &context_desc, &mut context)?;
+        zeContextCreate(drivers[0], &context_desc, &mut ze_runtime_sys::ze_context_handle_t(context));
         
         // Create command queue
         let mut queue_desc = ze_command_queue_desc_t {
@@ -406,7 +412,7 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             priority: ze_command_queue_priority_t::ZE_COMMAND_QUEUE_PRIORITY_NORMAL,
         };
         let mut command_queue = ptr::null_mut();
-        zeCommandQueueCreate(context, devices[0], &queue_desc, &mut command_queue)?;
+        zeCommandQueueCreate(ze_runtime_sys::ze_context_handle_t(context), devices[0], &queue_desc, &mut ze_runtime_sys::ze_command_queue_handle_t(command_queue));
         
         // Create command list
         let mut cmd_list_desc = ze_command_list_desc_t {
@@ -416,10 +422,10 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             flags: 0,
         };
         let mut command_list = ptr::null_mut();
-        zeCommandListCreate(context, devices[0], &cmd_list_desc, &mut command_list)?;
+        zeCommandListCreate(ze_runtime_sys::ze_context_handle_t(context), devices[0], &cmd_list_desc, &mut ze_runtime_sys::ze_command_list_handle_t(command_list));
         
         // Compile the module
-        let elf_module = comgr::compile_bitcode_intel(
+        let elf_module = comgr::compile_bitcode(
             "6.0",
             &*module.llvm_ir,
             module.linked_bitcode(),
@@ -437,7 +443,7 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
         };
         let mut ze_module = ptr::null_mut();
         let mut log = ptr::null_mut();
-        zeModuleCreate(context, devices[0], &module_desc, &mut ze_module, &mut log)?;
+        zeModuleCreate(ze_runtime_sys::ze_context_handle_t(context), devices[0], &module_desc, &mut ze_runtime_sys::ze_module_handle_t(ze_module), &mut log);
         
         // Create kernel
         let mut kernel_desc = ze_kernel_desc_t {
@@ -447,10 +453,10 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             pKernelName: name.as_ptr(),
         };
         let mut kernel = ptr::null_mut();
-        zeKernelCreate(ze_module, &kernel_desc, &mut kernel)?;
+        zeKernelCreate(ze_runtime_sys::ze_module_handle_t(ze_module), &kernel_desc, &mut ze_runtime_sys::ze_kernel_handle_t(kernel));
         
         // Set kernel group size
-        zeKernelSetGroupSize(kernel, 1, 1, 1)?;
+        zeKernelSetGroupSize(ze_runtime_sys::ze_kernel_handle_t(kernel), 1, 1, 1);
         
         // Allocate memory
         let input_size = input.len() * mem::size_of::<Input>();
@@ -466,23 +472,23 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
         let mut inp_b = ptr::null_mut();
         let mut out_b = ptr::null_mut();
         
-        zeMemAllocDevice(context, &mem_desc, input_size, 1, devices[0], &mut inp_b)?;
-        zeMemAllocDevice(context, &mem_desc, output_size, 1, devices[0], &mut out_b)?;
+        zeMemAllocDevice(ze_runtime_sys::ze_context_handle_t(context), &mem_desc, input_size, 1, devices[0], &mut inp_b);
+        zeMemAllocDevice(ze_runtime_sys::ze_context_handle_t(context), &mem_desc, output_size, 1, devices[0], &mut out_b);
         
         // Copy input data to device
         zeCommandListAppendMemoryCopy(
-            command_list,
+            ze_runtime_sys::ze_command_list_handle_t(command_list),
             inp_b,
             input.as_ptr() as *const _,
             input_size,
-            ptr::null_mut(),
+            ze_runtime_sys::ze_event_handle_t(ptr::null_mut()),
             0,
-            ptr::null_mut(),
-        )?;
+            &mut ze_runtime_sys::ze_event_handle_t(ptr::null_mut()),
+        );
         
         // Set kernel arguments
-        zeKernelSetArgumentValue(kernel, 0, mem::size_of::<*mut c_void>(), &inp_b as *const _ as *const c_void)?;
-        zeKernelSetArgumentValue(kernel, 1, mem::size_of::<*mut c_void>(), &out_b as *const _ as *const c_void)?;
+        zeKernelSetArgumentValue(ze_runtime_sys::ze_kernel_handle_t(kernel), 0, mem::size_of::<*mut c_void>(), &inp_b as *const _ as *const c_void);
+        zeKernelSetArgumentValue(ze_runtime_sys::ze_kernel_handle_t(kernel), 1, mem::size_of::<*mut c_void>(), &out_b as *const _ as *const c_void);
         
         // Launch kernel
         let mut launch_args = ze_group_count_t {
@@ -492,38 +498,38 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
         };
         
         zeCommandListAppendLaunchKernel(
-            command_list,
-            kernel,
+            ze_runtime_sys::ze_command_list_handle_t(command_list),
+            ze_runtime_sys::ze_kernel_handle_t(kernel),
             &launch_args,
-            ptr::null_mut(),
+            ze_runtime_sys::ze_event_handle_t(ptr::null_mut()),
             0,
-            ptr::null_mut(),
-        )?;
+            &mut ze_runtime_sys::ze_event_handle_t(ptr::null_mut()),
+        );
         
         // Copy output data back to host
         zeCommandListAppendMemoryCopy(
-            command_list,
+            ze_runtime_sys::ze_command_list_handle_t(command_list),
             result.as_mut_ptr() as *mut _,
             out_b,
             output_size,
-            ptr::null_mut(),
+            ze_runtime_sys::ze_event_handle_t(ptr::null_mut()),
             0,
-            ptr::null_mut(),
-        )?;
+            &mut ze_runtime_sys::ze_event_handle_t(ptr::null_mut()),
+        );
         
         // Execute commands
-        zeCommandListClose(command_list)?;
-        zeCommandQueueExecuteCommandLists(command_queue, 1, &command_list, ptr::null_mut())?;
-        zeCommandQueueSynchronize(command_queue, u32::MAX)?;
+        zeCommandListClose(ze_runtime_sys::ze_command_list_handle_t(command_list));
+        zeCommandQueueExecuteCommandLists(ze_runtime_sys::ze_command_queue_handle_t(command_queue), 1, &ze_runtime_sys::ze_command_list_handle_t(command_list), ze_runtime_sys::ze_fence_handle_t(ptr::null_mut()));
+        zeCommandQueueSynchronize(ze_runtime_sys::ze_command_queue_handle_t(command_queue), u64::MAX);
         
         // Cleanup
-        zeMemFree(context, inp_b)?;
-        zeMemFree(context, out_b)?;
-        zeKernelDestroy(kernel)?;
-        zeModuleDestroy(ze_module)?;
-        zeCommandListDestroy(command_list)?;
-        zeCommandQueueDestroy(command_queue)?;
-        zeContextDestroy(context)?;
+        zeMemFree(ze_runtime_sys::ze_context_handle_t(context), inp_b);
+        zeMemFree(ze_runtime_sys::ze_context_handle_t(context), out_b);
+        zeKernelDestroy(ze_runtime_sys::ze_kernel_handle_t(kernel));
+        zeModuleDestroy(ze_runtime_sys::ze_module_handle_t(ze_module));
+        zeCommandListDestroy(ze_runtime_sys::ze_command_list_handle_t(command_list));
+        zeCommandQueueDestroy(ze_runtime_sys::ze_command_queue_handle_t(command_queue));
+        zeContextDestroy(ze_runtime_sys::ze_context_handle_t(context));
     }
     
     Ok(result)

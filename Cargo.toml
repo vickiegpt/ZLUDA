@@ -24,3 +24,8 @@ members = [
 ]
 
 default-members = ["zluda", "zluda_ml", "zluda_inject", "zluda_redirect"]
+
+features = [
+    "amd",
+    "intel",
+]

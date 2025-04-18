@@ -17,8 +17,8 @@ bitflags = "1.2"
 rustc-hash = "2.0.0"
 strum = "0.26"
 strum_macros = "0.26"
-hip_runtime_sys = { path = "../ext/hip_runtime-sys" , optional = true }
-ze_runtime_sys = { path = "../ext/ze_runtime-sys" , optional = true }
+hip_runtime_sys = { path = "../ext/hip_runtime-sys" }
+ze_runtime_sys = { path = "../ext/ze_runtime-sys" }
 tempfile = "3"
 which = "4.4"
 
@@ -30,5 +30,5 @@ cuda-driver-sys = "0.3.0"
 
 
 [features]
-intel = ["ze_runtime_sys"]
-amd = ["hip_runtime_sys"]
+intel = []
+amd = []
