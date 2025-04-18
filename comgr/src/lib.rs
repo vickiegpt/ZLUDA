@@ -372,6 +372,8 @@ impl Drop for DataSet {
         unsafe { intel_comgr_release_data_set(self.0).ok() };
     }
 }
+#[cfg(feature = "intel")]
+struct ActionInfo(intel_comgr_action_info_t);
 
 // Implementation of ActionInfo for Intel
 #[cfg(feature = "intel")]

@@ -1,5 +1,5 @@
 [package]
-name = "intel_comgr-sys"
+name = "intel_comgr_sys"
 version = "0.1.0"
 edition = "2024"
 description = "Rust bindings for Intel Compiler for Graphics (COMGR) that follow AMD's COMGR API structure"

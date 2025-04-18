@@ -1,6 +1,10 @@
 // Generated automatically by zluda_bindgen
 // DO NOT EDIT MANUALLY
 #![allow(warnings)]
+#[cfg(feature = "intel")]
+use std::num::NonZero;
+#[cfg(feature = "intel")]
+use ze_runtime_sys::ze_result_t;
 use std::ffi::c_uint;
 pub const CUDA_VERSION: u32 = 12080;
 pub const CU_IPC_HANDLE_SIZE: u32 = 64;
@@ -8838,12 +8842,6 @@ pub type CUresult = ::core::result::Result<(), CUerror>;
 const _: fn() = || {
     let _ = std::mem::transmute::<CUresult, u32>;
 };
-#[cfg(feature = "intel")]
-impl From<ze_result_t> for CUresult {
-    fn from(value: ze_result_t) -> Self {
-        ze_to_cuda_result(value)
-    }
-}
 // Fix for Result<(),CUerror> conversion 
 #[cfg(feature = "intel")]
 impl From<CUerror> for CUresult {
@@ -8862,7 +8860,7 @@ impl From<hip_runtime_sys::hipErrorCode_t> for CUerror {
 #[cfg(feature = "intel")]
 impl From<ze_runtime_sys::ze_result_t> for CUerror {
     fn from(error: ze_runtime_sys::ze_result_t) -> Self {
-        Self(error.0)
+        Self(NonZero::new(error.0).unwrap())
     }
 }
 unsafe impl Send for CUdeviceptr {}

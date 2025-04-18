@@ -63,16 +63,18 @@ impl intel_comgr_data_kind_s {
 }
 
 // Data structures similar to AMD
+#[derive(Default, Clone, Copy)]
 pub struct intel_comgr_data_s {
     pub handle: u64,
 }
 pub type intel_comgr_data_t = intel_comgr_data_s;
 
+#[derive(Default, Clone, Copy)]
 pub struct intel_comgr_data_set_s {
     pub handle: u64,
 }
 pub type intel_comgr_data_set_t = intel_comgr_data_set_s;
-
+#[derive(Default, Clone, Copy)]
 pub struct intel_comgr_action_info_s {
     pub handle: u64,
 }

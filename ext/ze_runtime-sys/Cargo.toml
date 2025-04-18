@@ -1,5 +1,5 @@
 [package]
-name = "ze_runtime-sys"
+name = "ze_runtime_sys"
 version = "0.1.0"
 edition = "2024"
 description = "Rust bindings for oneAPI Level Zero Runtime API"
@@ -14,8 +14,3 @@ libloading = "0.8"
 bindgen = { version = "0.69", features = ["runtime"] }
 
 [lib]
-name = "ze_runtime_sys"
-path = "src/lib.rs"
-
-[features]
-default = []

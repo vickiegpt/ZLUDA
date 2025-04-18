@@ -1,5 +1,5 @@
 [package]
-name = "amd_comgr-sys"
+name = "amd_comgr_sys"
 version = "0.0.0"
 authors = ["Andrzej Janik <vosen@vosen.pl>"]
 edition = "2021"

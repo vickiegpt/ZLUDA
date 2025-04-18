@@ -4,12 +4,14 @@ version = "0.0.0"
 authors = ["Andrzej Janik <vosen@vosen.pl>"]
 edition = "2021"
 
+[features]
+amd =[]
+intel =[]
+
 [lib]
 
 [dependencies]
-amd_comgr-sys = { path = "../ext/amd_comgr-sys" , optional = true }
-intel_comgr-sys = { path = "../ext/intel_comgr-sys" , optional = true }
-
-[features]
-amd = ["amd_comgr-sys"]
-intel = ["intel_comgr-sys"]
+amd_comgr_sys = { path = "../ext/amd_comgr-sys"  }
+intel_comgr_sys = { path = "../ext/intel_comgr-sys"  }
+hip_runtime_sys = { path = "../ext/hip_runtime-sys"  }
+ze_runtime_sys = { path = "../ext/ze_runtime-sys"  }
