@@ -202,14 +202,14 @@ pub fn compile_bitcode(
     // Add main bitcode
     let mut main_data = unsafe { mem::zeroed() };
     unsafe { intel_comgr_create_data(intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC, &mut main_data) }?;
-    unsafe { intel_comgr_data_set_name(main_data, c"zluda.bc".as_ptr()) }?;
+    unsafe { intel_comgr_data_set_name(main_data, c"zluda_ptx_ze_impl.bc".as_ptr()) }?;
     unsafe { intel_comgr_data_set_bytes(main_data, main_buffer.as_ptr() as _, main_buffer.len()) }?;
     unsafe { intel_comgr_data_set_add(bitcode_data_set.0, main_data) }?;
     
     // Add stdlib bitcode
     let mut stdlib_data = unsafe { mem::zeroed() };
     unsafe { intel_comgr_create_data(intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC, &mut stdlib_data) }?;
-    unsafe { intel_comgr_data_set_name(stdlib_data, c"ptx_impl.bc".as_ptr()) }?;
+    unsafe { intel_comgr_data_set_name(stdlib_data, c"zluda_ptx_ze_impl.bc".as_ptr()) }?;
     unsafe { intel_comgr_data_set_bytes(stdlib_data, ptx_impl.as_ptr() as _, ptx_impl.len()) }?;
     unsafe { intel_comgr_data_set_add(bitcode_data_set.0, stdlib_data) }?;
     
