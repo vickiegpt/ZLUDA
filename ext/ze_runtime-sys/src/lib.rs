@@ -2600,9 +2600,6 @@ impl _ze_image_format_type_t {
     pub const ZE_IMAGE_FORMAT_TYPE_SNORM: _ze_image_format_type_t = _ze_image_format_type_t(3);
 }
 impl _ze_image_format_type_t {
-    pub const ZE_IMAGE_FORMAT_TYPE_FLOAT: _ze_image_format_type_t = _ze_image_format_type_t(4);
-}
-impl _ze_image_format_type_t {
     pub const ZE_IMAGE_FORMAT_TYPE_FORCE_UINT32: _ze_image_format_type_t =
         _ze_image_format_type_t(2147483647);
 }
@@ -8228,3 +8225,6 @@ pub struct _ze_callbacks_t {
     pub VirtualMem: ze_virtual_mem_callbacks_t,
 }
 pub type ze_callbacks_t = _ze_callbacks_t;
+
+// Export the Level Zero runner module
+pub mod runner;

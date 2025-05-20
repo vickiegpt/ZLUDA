@@ -1,7 +1,10 @@
+use amd_comgr_sys::*;
 #[cfg(feature = "amd")]
 use amd_comgr_sys::*;
 #[cfg(feature = "intel")]
 use intel_comgr_sys::*;
+#[cfg(feature = "intel")]
+use std::ffi::CString;
 use std::{ffi::CStr, mem, ptr};
 
 #[cfg(feature = "amd")]
@@ -199,19 +202,32 @@ pub fn compile_bitcode(
 ) -> Result<Vec<u8>, intel_comgr_status_s> {
     // Optional debug log
     eprintln!("ZLUDA DEBUG: Compiling bitcode for Intel GPU target");
+    eprintln!(
+        "ZLUDA DEBUG: Main buffer size: {} bytes, PTX impl size: {} bytes",
+        main_buffer.len(),
+        ptx_impl.len()
+    );
+    eprintln!(
+        "ZLUDA DEBUG: Target architecture: {:?}",
+        gcn_arch.to_string_lossy()
+    );
 
-    // Try normal compilation flow first
-    match try_compile_bitcode(gcn_arch, main_buffer, ptx_impl) {
-        Ok(result) => {
-            eprintln!("ZLUDA DEBUG: Compilation successful");
-            Ok(result)
+    // Directly try to compile - no fallback
+    let result = try_compile_bitcode(gcn_arch, main_buffer, ptx_impl);
+
+    match &result {
+        Ok(buffer) => {
+            eprintln!(
+                "ZLUDA DEBUG: Compilation succeeded, generated SPIR-V size: {} bytes",
+                buffer.len()
+            );
         }
-        Err(err) => {
-            // Error occurred, create mock output as fallback
-            eprintln!("ZLUDA DEBUG: Compilation error: {:?}, using fallback", err);
-            create_mock_spirv(main_buffer)
+        Err(e) => {
+            eprintln!("ZLUDA DEBUG: Compilation failed with error: {:?}", e);
         }
     }
+
+    result
 }
 
 #[cfg(feature = "intel")]
@@ -220,341 +236,207 @@ fn try_compile_bitcode(
     main_buffer: &[u8],
     ptx_impl: &[u8],
 ) -> Result<Vec<u8>, intel_comgr_status_s> {
+    eprintln!(
+        "ZLUDA VERBOSE: Creating relocatable with buffer size = {}, ptx_impl size = {}",
+        main_buffer.len(),
+        ptx_impl.len()
+    );
+
+    // Create new DataSet for inputs
     let bitcode_data_set = DataSet::new()?;
 
-    // Add main bitcode
+    // Create the main bitcode data
     let mut main_data = unsafe { mem::zeroed() };
-    unsafe {
+    match unsafe {
         intel_comgr_create_data(
             intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC,
             &mut main_data,
         )
-    }?;
-    unsafe { intel_comgr_data_set_name(main_data, c"zluda_ptx_ze_impl.bc".as_ptr()) }?;
-    unsafe { intel_comgr_data_set_bytes(main_data, main_buffer.as_ptr() as _, main_buffer.len()) }?;
+    } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Created main bitcode data input"),
+        Err(e) => {
+            eprintln!("ZLUDA ERROR: Failed to create main bitcode data: {:?}", e);
+            return Err(e);
+        }
+    }
 
-    // Add stdlib bitcode
-    unsafe { intel_comgr_data_set_bytes(main_data, ptx_impl.as_ptr() as _, ptx_impl.len()) }?;
-
-    // Linking action info
-    let mut linking_info = unsafe { mem::zeroed() };
-    unsafe { intel_comgr_create_action_info(&mut linking_info) }?;
-    unsafe { intel_comgr_data_set_add(bitcode_data_set.0, main_data) }?;
-
-    // Setup action info for adding device libraries
-    let mut device_libs_info = unsafe { mem::zeroed() };
-    unsafe { intel_comgr_create_action_info(&mut device_libs_info) }?;
-    unsafe {
-        intel_comgr_action_info_set_language(
-            device_libs_info,
-            intel_comgr_language_s::INTEL_COMGR_LANGUAGE_LLVM_IR,
+    match unsafe {
+        intel_comgr_data_set_bytes(
+            main_data,
+            main_buffer.as_ptr() as *const std::os::raw::c_void,
+            main_buffer.len(),
         )
-    }?;
+    } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Set main bitcode data content"),
+        Err(e) => {
+            eprintln!(
+                "ZLUDA ERROR: Failed to set main bitcode data content: {:?}",
+                e
+            );
+            return Err(e);
+        }
+    }
 
-    // Set target if needed
-    // The gcn_arch in Intel's case would typically be a specific GPU target
-    let target = format!("gpu-intel-gen12");
-    let target_cstr = std::ffi::CString::new(target).unwrap();
-    unsafe { intel_comgr_action_info_set_target(device_libs_info, target_cstr.as_ptr()) }?;
+    match unsafe { intel_comgr_data_set_name(main_data, c"combined_module.bc".as_ptr()) } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Set main bitcode data name"),
+        Err(e) => {
+            eprintln!("ZLUDA ERROR: Failed to set main bitcode data name: {:?}", e);
+            return Err(e);
+        }
+    }
 
-    // Set options
-    let options = ["-Xclang", "-mno-link-builtin-bitcode"];
-    let options_cstr = options
-        .iter()
-        .map(|opt| std::ffi::CString::new(*opt).unwrap())
-        .collect::<Vec<_>>();
-    let option_ptrs = options_cstr
-        .iter()
-        .map(|opt| opt.as_ptr())
-        .collect::<Vec<_>>();
+    // Add the main bitcode data to the input DataSet
+    match unsafe { intel_comgr_data_set_add(bitcode_data_set.0, main_data) } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Added main bitcode data to input DataSet"),
+        Err(e) => {
+            eprintln!("ZLUDA ERROR: Failed to add main bitcode data: {:?}", e);
+            return Err(e);
+        }
+    }
 
-    unsafe {
-        intel_comgr_action_info_set_option_list(
-            device_libs_info,
-            option_ptrs.as_ptr(),
-            option_ptrs.len(),
-        )
-    }?;
-
-    // Add device libraries to the bitcode
-    let with_device_libs = do_action(
-        &bitcode_data_set,
-        &ActionInfo(device_libs_info),
-        intel_comgr_action_kind_s::INTEL_COMGR_ACTION_ADD_DEVICE_LIBRARIES,
-    )?;
-
-    // Setup compiler action info for optimization
+    // Setup compilation options
     let mut compile_info = unsafe { mem::zeroed() };
-    unsafe { intel_comgr_create_action_info(&mut compile_info) }?;
+    match unsafe { intel_comgr_create_action_info(&mut compile_info) } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Created compile action info"),
+        Err(e) => {
+            eprintln!("ZLUDA ERROR: Failed to create compile action info: {:?}", e);
+            return Err(e);
+        }
+    }
 
-    // Common compiler options
-    let common_options = ["-O3"];
-    // Add debug options if in debug mode
-    let debug_options = if cfg!(debug_assertions) {
-        vec!["-g"]
-    } else {
-        vec![
-            "-g0",
-            // Optimization flags
-            "-mllvm",
-            "-inline-threshold=2250",
-            "-mllvm",
-            "-inlinehint-threshold=3250",
-        ]
-    };
-
-    // Combine options
-    let mut all_options = common_options.to_vec();
-    all_options.extend(debug_options);
-
-    // Convert options to C strings
-    let options_cstr = all_options
-        .iter()
-        .map(|opt| std::ffi::CString::new(*opt).unwrap())
-        .collect::<Vec<_>>();
-    let option_ptrs = options_cstr
-        .iter()
-        .map(|opt| opt.as_ptr())
-        .collect::<Vec<_>>();
-
-    unsafe {
-        intel_comgr_action_info_set_option_list(
+    match unsafe {
+        intel_comgr_action_info_set_language(
             compile_info,
-            option_ptrs.as_ptr(),
-            option_ptrs.len(),
+            intel_comgr_language_s::INTEL_COMGR_LANGUAGE_OPENCL_2_0,
         )
-    }?;
+    } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Set compile language to OpenCL 2.0"),
+        Err(e) => {
+            eprintln!("ZLUDA ERROR: Failed to set compile language: {:?}", e);
+            return Err(e);
+        }
+    }
 
-    // Optimize bitcode
-    let optimized_bc = do_action(
-        &with_device_libs,
-        &ActionInfo(compile_info),
-        intel_comgr_action_kind_s::INTEL_COMGR_ACTION_OPTIMIZE_BC_TO_BC,
-    )?;
+    // Set the target architecture
+    let target_cstr =
+        CString::new(format!("skl-{}", "64")).expect("failed to create target string");
+    match unsafe { intel_comgr_action_info_set_target(compile_info, target_cstr.as_ptr()) } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Set compile target to SKL-64"),
+        Err(e) => {
+            eprintln!("ZLUDA ERROR: Failed to set compile target: {:?}", e);
+            return Err(e);
+        }
+    }
 
-    // Generate relocatable code
+    // Perform the BC to relocatable action
+    let action_info = ActionInfo(compile_info);
     let reloc_data_set = do_action(
-        &optimized_bc,
-        &ActionInfo(compile_info),
+        &bitcode_data_set,
+        &action_info,
         intel_comgr_action_kind_s::INTEL_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE,
     )?;
 
-    // Get the output data
+    // Get the output relocatable object data
     let mut count = 0;
-    unsafe { intel_comgr_get_data_count(reloc_data_set.0, &mut count) }?;
+    match unsafe { intel_comgr_get_data_count(reloc_data_set.0, &mut count) } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Found {} output data objects", count),
+        Err(e) => {
+            eprintln!("ZLUDA ERROR: Failed to get output data count: {:?}", e);
+            return Err(e);
+        }
+    }
 
     if count == 0 {
+        eprintln!("ZLUDA ERROR: No output data objects found");
         return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
     }
 
-    // Get the data
     let mut data = unsafe { mem::zeroed() };
-    unsafe { intel_comgr_get_data(reloc_data_set.0, 0, &mut data) }?;
+    match unsafe { intel_comgr_get_data(reloc_data_set.0, 0, &mut data) } {
+        Ok(_) => eprintln!("ZLUDA VERBOSE: Successfully got output data"),
+        Err(e) => {
+            eprintln!("ZLUDA ERROR: Failed to get output data: {:?}", e);
+            return Err(e);
+        }
+    }
 
-    // Get the data size and copy contents
-    let mut size = 0;
+    // Get the content of the output data
     let mut buffer = Vec::new();
-
-    // First get size
+    let mut size = 0;
     unsafe {
         // Get the size of the data
-        intel_comgr_data_get_bytes(data, std::ptr::null_mut(), &mut size)?;
+        match intel_comgr_data_get_bytes(data, std::ptr::null_mut(), &mut size) {
+            Ok(_) => eprintln!("ZLUDA VERBOSE: Output data size: {} bytes", size),
+            Err(e) => {
+                eprintln!("ZLUDA ERROR: Failed to get output data size: {:?}", e);
+                return Err(e);
+            }
+        }
 
         if size > 0 {
             // Allocate buffer and get bytes
             buffer.reserve(size);
             buffer.set_len(size);
-            intel_comgr_data_get_bytes(
+            match intel_comgr_data_get_bytes(
                 data,
                 buffer.as_mut_ptr() as *mut std::os::raw::c_void,
                 &mut size,
-            )?;
+            ) {
+                Ok(_) => {
+                    eprintln!(
+                        "ZLUDA VERBOSE: Successfully copied output data of {} bytes",
+                        size
+                    );
+
+                    // Check if the buffer contains our mock marker
+                    let marker = b"ZLUDA_MOCK_RELOCATABLE\0";
+                    if buffer.len() > marker.len()
+                        && buffer.windows(marker.len()).any(|window| window == marker)
+                    {
+                        eprintln!("ZLUDA VERBOSE: Found mock relocatable marker in output");
+                    }
+
+                    // Output some file structure info to help debug
+                    if buffer.len() >= 4 && &buffer[0..4] == b"\x7fELF" {
+                        eprintln!("ZLUDA VERBOSE: Output has valid ELF header");
+                    } else {
+                        eprintln!("ZLUDA WARNING: Output does not have valid ELF header");
+
+                        // Try to display the first 32 bytes for debugging
+                        if buffer.len() >= 32 {
+                            let prefix: Vec<_> =
+                                buffer[0..32].iter().map(|b| format!("{:02x}", b)).collect();
+                            eprintln!("ZLUDA DEBUG: First 32 bytes: {}", prefix.join(" "));
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("ZLUDA ERROR: Failed to copy output data: {:?}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            eprintln!("ZLUDA WARNING: Output data size is 0");
         }
 
         // Release resources
-        intel_comgr_release_data(data)?;
+        match intel_comgr_release_data(data) {
+            Ok(_) => eprintln!("ZLUDA VERBOSE: Released output data resources"),
+            Err(e) => {
+                eprintln!(
+                    "ZLUDA ERROR: Failed to release output data resources: {:?}",
+                    e
+                );
+                return Err(e);
+            }
+        }
     }
-
-    Ok(buffer)
-}
-
-#[cfg(feature = "intel")]
-fn create_mock_spirv(original: &[u8]) -> Result<Vec<u8>, intel_comgr_status_s> {
-    // Create a mock SPIR-V binary that will work with the ZE runtime
-    // This is a minimal valid SPIR-V module with a single kernel that writes value 2 to output
-
-    eprintln!("ZLUDA DEBUG: Creating mock SPIR-V binary that will output [2]");
-
-    // SPIR-V magic number + version 1.0
-    let magic = [0x07, 0x23, 0x02, 0x03];
-    let version = [0x01, 0x00, 0x00, 0x00]; // Version 1.0
-
-    // Create a minimal SPIR-V binary
-    let mut spv = Vec::new();
-
-    // Magic number and version
-    spv.extend_from_slice(&magic);
-    spv.extend_from_slice(&version);
-
-    // Generator ID (using a custom one for ZLUDA mock)
-    spv.extend_from_slice(&[0x00, 0x00, 0x0A, 0x00]);
-
-    // Bound (ID limit) - increased to accommodate more IDs
-    spv.extend_from_slice(&[0x50, 0x00, 0x00, 0x00]);
-
-    // Reserved field
-    spv.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-
-    // Add minimal SPIR-V instructions to make it valid
-    // Capability Kernel and AddressesPhysical
-    spv.extend_from_slice(&[0x03, 0x00, 0x02, 0x00, 0x06, 0x00, 0x00, 0x00]);
-    spv.extend_from_slice(&[0x03, 0x00, 0x02, 0x00, 0x05, 0x00, 0x00, 0x00]);
-
-    // OpExtInstImport "OpenCL.std"
-    let opencl_std = "OpenCL.std";
-    let words_needed = (opencl_std.len() / 4) + 1;
-    let mut instruction = vec![
-        (3 + words_needed) as u8,
-        0x00,
-        0x05,
-        0x00,
-        0x01,
-        0x00,
-        0x00,
-        0x00,
-    ];
-
-    for c in opencl_std.bytes() {
-        instruction.push(c);
-    }
-    // Pad to 4-byte alignment
-    while instruction.len() % 4 != 0 {
-        instruction.push(0);
-    }
-    spv.extend_from_slice(&instruction);
-
-    // Memory model (OpMemoryModel Physical OpenCL)
-    spv.extend_from_slice(&[
-        0x0E, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
-    ]);
-
-    // Function declaration for a minimal kernel named "main"
-    // OpEntryPoint Kernel %main "main" %in_ptr %out_ptr
-    let kernel_name = "main";
-    let words_needed = (kernel_name.len() / 4) + 1;
-    let mut entry_point = vec![
-        (6 + words_needed) as u8,
-        0x00,
-        0x11,
-        0x00,
-        0x10,
-        0x00,
-        0x00,
-        0x00,
-        0x06,
-        0x00,
-        0x00,
-        0x00,
-    ];
-
-    for c in kernel_name.bytes() {
-        entry_point.push(c);
-    }
-    // Pad to 4-byte alignment
-    while entry_point.len() % 4 != 0 {
-        entry_point.push(0);
-    }
-    // Add the input and output param IDs
-    entry_point.extend_from_slice(&[0x12, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00]);
-    spv.extend_from_slice(&entry_point);
-
-    // Define types for our kernel
-
-    // Type void
-    spv.extend_from_slice(&[0x02, 0x00, 0x14, 0x00, 0x03, 0x00, 0x00, 0x00]);
-
-    // Type int32
-    spv.extend_from_slice(&[
-        0x04, 0x00, 0x15, 0x00, 0x04, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ]);
-
-    // Type int pointer (physical storage class 1)
-    spv.extend_from_slice(&[
-        0x04, 0x00, 0x1F, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
-        0x00,
-    ]);
-
-    // Type function (void with int* params)
-    spv.extend_from_slice(&[
-        0x05, 0x00, 0x21, 0x00, 0x06, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00,
-        0x00, 0x05, 0x00, 0x00, 0x00,
-    ]);
-
-    // Define function parameters as variables
-    // OpVariable %int_ptr Function %in_ptr (ID 12)
-    spv.extend_from_slice(&[
-        0x04, 0x00, 0x27, 0x00, 0x05, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00,
-        0x00,
-    ]);
-
-    // OpVariable %int_ptr Function %out_ptr (ID 13)
-    spv.extend_from_slice(&[
-        0x04, 0x00, 0x27, 0x00, 0x05, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00,
-        0x00,
-    ]);
-
-    // Constant int32 with value 2 (ID 8)
-    spv.extend_from_slice(&[
-        0x04, 0x00, 0x20, 0x00, 0x04, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
-        0x00,
-    ]);
-
-    // Define the main function (ID 10)
-    spv.extend_from_slice(&[
-        0x05, 0x00, 0x13, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00,
-        0x00, 0x10, 0x00, 0x00, 0x00,
-    ]);
-
-    // Function begin
-    spv.extend_from_slice(&[0x01, 0x00, 0x16, 0x00, 0x10, 0x00, 0x00, 0x00]);
-
-    // CRITICAL FIX: Simplified approach to storing value 2
-
-    // Direct store of constant 2 to output pointer
-    // OpStore %out_ptr %const_2
-    spv.extend_from_slice(&[
-        0x03, 0x00, 0x2E, 0x00, 0x13, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
-    ]);
-
-    // Add a memory barrier to ensure write is visible
-    // OpMemoryBarrier %scope %semantics
-    spv.extend_from_slice(&[
-        0x03, 0x00, 0xF8, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x20, 0x00, 0x00,
-    ]);
-
-    // Function end
-    spv.extend_from_slice(&[0x01, 0x00, 0x18, 0x00]);
-
-    // Add original binary size and a hash as metadata
-    let size_bytes = original.len().to_le_bytes();
-    spv.extend_from_slice(&[0x08, 0x00, 0xFF, 0xFF]); // Custom OpCode for metadata
-    spv.extend_from_slice(&size_bytes);
-
-    // Add a simple hash (just sum the first 100 bytes or less)
-    let mut hash: u32 = 0;
-    for b in original.iter().take(100) {
-        hash = hash.wrapping_add(*b as u32);
-    }
-    let hash_bytes = hash.to_le_bytes();
-    spv.extend_from_slice(&hash_bytes);
 
     eprintln!(
-        "ZLUDA DEBUG: Created mock SPIR-V, size: {} bytes",
-        spv.len()
+        "ZLUDA VERBOSE: Compilation completed successfully, output size: {} bytes",
+        buffer.len()
     );
-
-    Ok(spv)
+    Ok(buffer)
 }
 
 // Helper implementation for DataSet with Intel support
@@ -624,6 +506,117 @@ fn do_action(
     kind: intel_comgr_action_kind_s,
 ) -> Result<DataSet, intel_comgr_status_s> {
     let mut result = DataSet::new()?;
-    unsafe { intel_comgr_do_action(kind, action.0, data_set.0, result.0) }?;
-    Ok(result)
+    let action_kind_name = match kind.0 {
+        0 => "INTEL_COMGR_ACTION_SOURCE_TO_PREPROCESSED",
+        1 => "INTEL_COMGR_ACTION_ADD_PRECOMPILED_HEADERS",
+        2 => "INTEL_COMGR_ACTION_COMPILE_SOURCE_TO_BC",
+        3 => "INTEL_COMGR_ACTION_ADD_DEVICE_LIBRARIES",
+        4 => "INTEL_COMGR_ACTION_LINK_BC_TO_BC",
+        5 => "INTEL_COMGR_ACTION_OPTIMIZE_BC_TO_BC",
+        6 => "INTEL_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE",
+        7 => "INTEL_COMGR_ACTION_CODEGEN_BC_TO_ASSEMBLY",
+        8 => "INTEL_COMGR_ACTION_LINK_RELOCATABLE_TO_EXECUTABLE",
+        9 => "INTEL_COMGR_ACTION_COMPILE_SOURCE_TO_FATBIN",
+        _ => "UNKNOWN_ACTION",
+    };
+
+    eprintln!("ZLUDA VERBOSE: Executing action: {}", action_kind_name);
+
+    let status = unsafe { intel_comgr_do_action(kind, action.0, data_set.0, result.0) };
+
+    match status {
+        Ok(_) => {
+            eprintln!(
+                "ZLUDA VERBOSE: Action {} completed successfully",
+                action_kind_name
+            );
+
+            // Try to get log data if available
+            let mut data_count = 0;
+            if let Ok(_) = unsafe { intel_comgr_get_data_count(result.0, &mut data_count) } {
+                eprintln!("ZLUDA VERBOSE: Action produced {} data objects", data_count);
+
+                // Log retrieval is simplified as Intel doesn't have the data_get_kind function
+                for i in 0..data_count {
+                    let mut data = unsafe { mem::zeroed() };
+                    if let Ok(_) = unsafe { intel_comgr_get_data(result.0, i, &mut data) } {
+                        // Try to get data size - if successful, attempt to read it as log
+                        let mut size = 0;
+                        if let Ok(_) = unsafe {
+                            intel_comgr_data_get_bytes(data, std::ptr::null_mut(), &mut size)
+                        } {
+                            if size > 0 {
+                                let mut content = vec![0u8; size];
+                                if let Ok(_) = unsafe {
+                                    intel_comgr_data_get_bytes(
+                                        data,
+                                        content.as_mut_ptr() as *mut std::os::raw::c_void,
+                                        &mut size,
+                                    )
+                                } {
+                                    if let Ok(text) = String::from_utf8(content) {
+                                        if text.contains("error:") || text.contains("warning:") {
+                                            eprintln!(
+                                                "ZLUDA COMPILER LOG for {}: \n{}",
+                                                action_kind_name, text
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Release the data
+                        unsafe { intel_comgr_release_data(data).ok() };
+                    }
+                }
+            }
+
+            Ok(result)
+        }
+        Err(e) => {
+            eprintln!(
+                "ZLUDA ERROR: Action {} failed with error: {:?}",
+                action_kind_name, e
+            );
+
+            // Check if we can get any logs even in case of failure
+            let mut data_count = 0;
+            if let Ok(_) = unsafe { intel_comgr_get_data_count(result.0, &mut data_count) } {
+                if data_count > 0 {
+                    eprintln!("ZLUDA VERBOSE: Found {} logs for failed action", data_count);
+                    for i in 0..data_count {
+                        let mut data = unsafe { mem::zeroed() };
+                        if let Ok(_) = unsafe { intel_comgr_get_data(result.0, i, &mut data) } {
+                            let mut size = 0;
+                            if let Ok(_) = unsafe {
+                                intel_comgr_data_get_bytes(data, std::ptr::null_mut(), &mut size)
+                            } {
+                                if size > 0 {
+                                    let mut content = vec![0u8; size];
+                                    if let Ok(_) = unsafe {
+                                        intel_comgr_data_get_bytes(
+                                            data,
+                                            content.as_mut_ptr() as *mut std::os::raw::c_void,
+                                            &mut size,
+                                        )
+                                    } {
+                                        if let Ok(text) = String::from_utf8(content) {
+                                            eprintln!(
+                                                "ZLUDA FAILURE LOG for {}: \n{}",
+                                                action_kind_name, text
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            unsafe { intel_comgr_release_data(data).ok() };
+                        }
+                    }
+                }
+            }
+
+            Err(e)
+        }
+    }
 }
