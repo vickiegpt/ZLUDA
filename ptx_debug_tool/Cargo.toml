@@ -1,0 +1,17 @@
+[package]
+name = "ptx_debug_tool"
+version = "0.1.0"
+edition = "2021"
+authors = ["ZLUDA PTX Debug Team"]
+
+[[bin]]
+name = "ptx-debug"
+path = "src/main.rs"
+
+[dependencies]
+ptx = { path = "../ptx" }
+clap = { version = "4.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }

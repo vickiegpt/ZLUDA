@@ -13,6 +13,7 @@ members = [
     "zluda_redirect",
     "zluda_ml",
     "ptx",
+    "ptx_debug_tool",
     "ptx_parser",
     "ptx_parser_macros",
     "ptx_parser_macros_impl",

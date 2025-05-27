@@ -4,13 +4,17 @@ use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::{
     borrow::Cow,
-    collections::{hash_map, HashMap},
+    collections::{hash_map, HashMap, HashSet},
     ffi::CString,
     iter,
+    cell::RefCell,
+    fmt::{self, Display, Formatter, Write},
+    path::Path,
 };
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
+mod debug_integration;
 mod deparamize_functions;
 pub(crate) mod emit_llvm;
 mod expand_operands;
@@ -18,11 +22,12 @@ mod fix_special_registers2;
 mod hoist_globals;
 mod insert_explicit_load_store;
 mod insert_implicit_conversions2;
+pub(crate) mod llvm_helpers;
 mod normalize_identifiers2;
 mod normalize_predicates2;
 mod replace_instructions_with_function_calls;
-mod resolve_function_pointers;
 mod replace_known_functions;
+mod resolve_function_pointers;
 
 static ZLUDA_PTX_IMPL: &'static [u8] = include_bytes!("../../lib/zluda_ptx_impl.bc");
 const ZLUDA_PTX_PREFIX: &'static str = "__zluda_ptx_impl_";
@@ -46,7 +51,13 @@ pub fn to_llvm_module<'input>(ast: ast::Module<'input>) -> Result<Module, Transl
     let directives = replace_known_functions::run(&flat_resolver, directives);
     let directives = normalize_predicates2::run(&mut flat_resolver, directives)?;
     let directives = resolve_function_pointers::run(directives)?;
-    let directives: Vec<Directive2<'_, ptx_parser::Instruction<ptx_parser::ParsedOperand<SpirvWord>>, ptx_parser::ParsedOperand<SpirvWord>>> = fix_special_registers2::run(&mut flat_resolver, &sreg_map, directives)?;
+    let directives: Vec<
+        Directive2<
+            '_,
+            ptx_parser::Instruction<ptx_parser::ParsedOperand<SpirvWord>>,
+            ptx_parser::ParsedOperand<SpirvWord>,
+        >,
+    > = fix_special_registers2::run(&mut flat_resolver, &sreg_map, directives)?;
     let directives = expand_operands::run(&mut flat_resolver, directives)?;
     let directives = deparamize_functions::run(&mut flat_resolver, directives)?;
     let directives = insert_explicit_load_store::run(&mut flat_resolver, directives)?;
@@ -471,6 +482,7 @@ impl<T: ast::Operand<Ident = SpirvWord>> Statement<ast::Instruction<T>, T> {
     }
 }
 
+#[derive(Clone)]
 struct BrachCondition {
     predicate: SpirvWord,
     if_true: SpirvWord,
@@ -498,20 +510,23 @@ enum ConversionKind {
     AddressOf,
 }
 
+#[derive(Clone)]
 struct ConstantDefinition {
     pub dst: SpirvWord,
     pub typ: ast::ScalarType,
     pub value: ast::ImmediateValue,
 }
 
+#[derive(Clone)]
 pub struct PtrAccess<T> {
-    underlying_type: ast::Type,
-    state_space: ast::StateSpace,
-    dst: SpirvWord,
-    ptr_src: SpirvWord,
-    offset_src: T,
+    pub underlying_type: ast::Type,
+    pub state_space: ast::StateSpace,
+    pub dst: SpirvWord,
+    pub ptr_src: SpirvWord,
+    pub offset_src: T,
 }
 
+#[derive(Clone)]
 struct RepackVectorDetails {
     is_extract: bool,
     typ: ast::ScalarType,
@@ -520,6 +535,7 @@ struct RepackVectorDetails {
     relaxed_type_check: bool,
 }
 
+#[derive(Clone)]
 struct FunctionPointerDetails {
     dst: SpirvWord,
     src: SpirvWord,
@@ -849,21 +865,23 @@ impl SpecialRegistersMap2 {
     }
 }
 
+#[derive(Clone)]
 pub struct VectorRead {
-    scalar_type: ast::ScalarType,
-    vector_width: u8,
-    scalar_dst: SpirvWord,
-    vector_src: SpirvWord,
-    member: u8,
+    pub scalar_type: ast::ScalarType,
+    pub vector_width: u8,
+    pub scalar_dst: SpirvWord,
+    pub vector_src: SpirvWord,
+    pub member: u8,
 }
 
+#[derive(Clone)]
 pub struct VectorWrite {
-    scalar_type: ast::ScalarType,
-    vector_width: u8,
-    vector_dst: SpirvWord,
-    vector_src: SpirvWord,
-    scalar_src: SpirvWord,
-    member: u8,
+    pub scalar_type: ast::ScalarType,
+    pub vector_width: u8,
+    pub vector_dst: SpirvWord,
+    pub vector_src: SpirvWord,
+    pub scalar_src: SpirvWord,
+    pub member: u8,
 }
 
 fn scalar_to_ptx_name(this: ast::ScalarType) -> &'static str {
@@ -895,3 +913,30 @@ fn scalar_to_ptx_name(this: ast::ScalarType) -> &'static str {
 
 type UnconditionalStatement =
     Statement<ast::Instruction<ast::ParsedOperand<SpirvWord>>, ast::ParsedOperand<SpirvWord>>;
+
+impl From<SpirvWord> for String {
+    fn from(word: SpirvWord) -> Self {
+        format!("_{}", word.0)
+    }
+}
+
+impl AsRef<str> for SpirvWord {
+    fn as_ref(&self) -> &str {
+        // This is a bit of a hack since we can't actually return a reference 
+        // to the formatted string, we'll use a thread-local static string
+        thread_local! {
+            static THREAD_LOCAL_BUFFER: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+        }
+        
+        THREAD_LOCAL_BUFFER.with(|buffer| {
+            let mut buffer = buffer.borrow_mut();
+            buffer.clear();
+            write!(buffer, "_{}", self.0).unwrap();
+            // This is unsafe because we're returning a reference to a string that might change
+            // if the same thread accesses the same thread-local storage before this reference
+            // is used. For our purposes this should be safe enough since we're only using it
+            // immediately for lookups.
+            unsafe { std::mem::transmute::<&str, &str>(&buffer) }
+        })
+    }
+}

@@ -1,0 +1,419 @@
+// DWARF debug information generation for PTX to target architecture mapping
+// This module provides functionality to maintain mappings from PTX source to
+// compiled target code (SASS/AMD GCN/Intel SPIRV) for program state recovery
+
+use std::collections::HashMap;
+use std::ffi::CString;
+use std::ptr;
+
+use llvm_zluda::debuginfo::*;
+use llvm_zluda::prelude::*;
+use serde::{Deserialize, Serialize};
+
+/// PTX source location information
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PtxSourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub instruction_offset: usize,
+}
+
+/// Target architecture instruction mapping
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TargetInstruction {
+    AmdGcn {
+        instruction: String,
+        address: u64,
+        register_state: HashMap<String, String>,
+    },
+    IntelSpirv {
+        instruction: String,
+        opcode: u32,
+        operands: Vec<String>,
+    },
+    Sass {
+        instruction: String,
+        address: u64,
+        predicate: Option<String>,
+    },
+}
+
+/// DWARF mapping entry that connects PTX source to target instructions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DwarfMappingEntry {
+    pub ptx_location: PtxSourceLocation,
+    pub target_instructions: Vec<TargetInstruction>,
+    pub variable_mappings: HashMap<String, VariableLocation>,
+    pub scope_id: u64,
+}
+
+/// Variable location in target architecture
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VariableLocation {
+    Register(String),
+    Memory { address: u64, size: u32 },
+    Constant(String),
+}
+
+/// DWARF debug info builder for PTX compilation
+pub struct PtxDwarfBuilder {
+    pub context: LLVMContextRef,
+    pub module: LLVMModuleRef,
+    di_builder: *mut llvm_zluda::LLVMOpaqueDIBuilder,
+    compile_unit: LLVMMetadataRef,
+    file: LLVMMetadataRef,
+    source_mappings: Vec<DwarfMappingEntry>,
+    current_scope: LLVMMetadataRef,
+    variable_counter: u64,
+}
+
+impl PtxDwarfBuilder {
+    /// Create a new DWARF builder for PTX compilation
+    pub unsafe fn new(
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+        source_file: &str,
+        producer: &str,
+    ) -> Result<Self, String> {
+        let di_builder = LLVMCreateDIBuilder(module);
+        if di_builder.is_null() {
+            return Err("Failed to create DIBuilder".to_string());
+        }
+
+        let producer_cstr = CString::new(producer).map_err(|_| "Invalid producer string")?;
+        let directory_cstr = CString::new(".").map_err(|_| "Invalid directory string")?;
+        let filename_cstr = CString::new(source_file).map_err(|_| "Invalid filename string")?;
+
+        // Create debug info file
+        let di_file = LLVMDIBuilderCreateFile(
+            di_builder,
+            filename_cstr.as_ptr(),
+            filename_cstr.as_bytes().len(),
+            directory_cstr.as_ptr(),
+            directory_cstr.as_bytes().len(),
+        );
+
+        // Create compile unit
+        let di_compile_unit = LLVMDIBuilderCreateCompileUnit(
+            di_builder,
+            llvm_zluda::debuginfo::LLVMDWARFSourceLanguage::LLVMDWARFSourceLanguageC, // PTX as C-like
+            di_file,
+            producer_cstr.as_ptr(),
+            producer_cstr.as_bytes().len(),
+            0,           // not optimized initially
+            ptr::null(), // no flags
+            0,           // flags length
+            0,           // runtime version
+            ptr::null(), // split name
+            0,           // split name length
+            llvm_zluda::debuginfo::LLVMDWARFEmissionKind::LLVMDWARFEmissionKindFull,
+            0,           // DWO ID
+            1,           // split debug inlining
+            0,           // debug info for profiling
+            ptr::null(), // sysroot
+            0,           // sysroot length
+            ptr::null(), // SDK
+            0,           // SDK length
+        );
+
+        Ok(Self {
+            context,
+            module,
+            di_builder,
+            compile_unit: di_compile_unit,
+            file: di_file,
+            source_mappings: Vec::new(),
+            current_scope: di_compile_unit,
+            variable_counter: 0,
+        })
+    }
+
+    /// Add a PTX source to target instruction mapping
+    pub fn add_mapping(&mut self, mapping: DwarfMappingEntry) {
+        self.source_mappings.push(mapping);
+    }
+
+    /// Create debug location for PTX source line
+    pub unsafe fn create_debug_location(
+        &self,
+        line: u32,
+        column: u32,
+        scope: Option<LLVMMetadataRef>,
+    ) -> LLVMMetadataRef {
+        let scope = scope.unwrap_or(self.current_scope);
+        LLVMDIBuilderCreateDebugLocation(
+            self.context,
+            line,
+            column,
+            scope,
+            ptr::null_mut(), // inlined at
+        )
+    }
+
+    /// Create a function debug info entry
+    pub unsafe fn create_function_debug_info(
+        &mut self,
+        function_name: &str,
+        linkage_name: &str,
+        line: u32,
+        function_type: LLVMMetadataRef,
+        is_local_to_unit: bool,
+        is_definition: bool,
+    ) -> Result<LLVMMetadataRef, String> {
+        let name_cstr = CString::new(function_name).map_err(|_| "Invalid function name")?;
+        let linkage_cstr = CString::new(linkage_name).map_err(|_| "Invalid linkage name")?;
+
+        let di_function = LLVMDIBuilderCreateFunction(
+            self.di_builder,
+            self.file, // scope
+            name_cstr.as_ptr(),
+            name_cstr.as_bytes().len(),
+            linkage_cstr.as_ptr(),
+            linkage_cstr.as_bytes().len(),
+            self.file,
+            line,
+            function_type,
+            if is_local_to_unit { 1 } else { 0 },
+            if is_definition { 1 } else { 0 },
+            line, // scope line
+            0,    // flags
+            0,    // is optimized
+        );
+
+        self.current_scope = di_function;
+        Ok(di_function)
+    }
+
+    /// Create variable debug info
+    pub unsafe fn create_variable_debug_info(
+        &mut self,
+        name: &str,
+        line: u32,
+        var_type: LLVMMetadataRef,
+        _location: &VariableLocation,
+    ) -> Result<LLVMMetadataRef, String> {
+        let name_cstr = CString::new(name).map_err(|_| "Invalid variable name")?;
+
+        let di_variable = LLVMDIBuilderCreateAutoVariable(
+            self.di_builder,
+            self.current_scope,
+            name_cstr.as_ptr(),
+            name_cstr.as_bytes().len(),
+            self.file,
+            line,
+            var_type,
+            1, // always preserve
+            0, // flags
+            0, // align in bits
+        );
+
+        self.variable_counter += 1;
+        Ok(di_variable)
+    }
+
+    /// Create basic type debug info (for PTX types)
+    pub unsafe fn create_basic_type(
+        &self,
+        name: &str,
+        size_in_bits: u64,
+        encoding: u32,
+    ) -> Result<LLVMMetadataRef, String> {
+        let name_cstr = CString::new(name).map_err(|_| "Invalid type name")?;
+
+        Ok(LLVMDIBuilderCreateBasicType(
+            self.di_builder,
+            name_cstr.as_ptr(),
+            name_cstr.as_bytes().len(),
+            size_in_bits,
+            encoding,
+            0, // flags
+        ))
+    }
+
+    /// Finalize debug info generation
+    pub unsafe fn finalize(&self) {
+        LLVMDIBuilderFinalize(self.di_builder);
+    }
+
+    /// Get all source mappings for state recovery
+    pub fn get_mappings(&self) -> &[DwarfMappingEntry] {
+        &self.source_mappings
+    }
+
+    /// Find mapping by PTX source location
+    pub fn find_mapping_by_location(&self, line: u32, column: u32) -> Option<&DwarfMappingEntry> {
+        self.source_mappings.iter().find(|mapping| {
+            mapping.ptx_location.line == line && mapping.ptx_location.column == column
+        })
+    }
+
+    /// Export mappings for external debugger integration
+    pub fn export_mapping_table(&self) -> String {
+        let mut output = String::new();
+        output.push_str("# PTX to Target Architecture Debug Mapping\n");
+        output.push_str("# Format: ptx_line:ptx_col -> target_instructions\n\n");
+
+        for mapping in &self.source_mappings {
+            output.push_str(&format!(
+                "{}:{}:{} -> [\n",
+                mapping.ptx_location.file, mapping.ptx_location.line, mapping.ptx_location.column
+            ));
+
+            for (i, target_inst) in mapping.target_instructions.iter().enumerate() {
+                match target_inst {
+                    TargetInstruction::AmdGcn {
+                        instruction,
+                        address,
+                        ..
+                    } => {
+                        output.push_str(&format!(
+                            "  AMD_GCN[{}]: {} @ 0x{:x}\n",
+                            i, instruction, address
+                        ));
+                    }
+                    TargetInstruction::IntelSpirv {
+                        instruction,
+                        opcode,
+                        ..
+                    } => {
+                        output.push_str(&format!(
+                            "  SPIRV[{}]: {} (opcode: {})\n",
+                            i, instruction, opcode
+                        ));
+                    }
+                    TargetInstruction::Sass {
+                        instruction,
+                        address,
+                        predicate,
+                    } => {
+                        let pred_str = predicate
+                            .as_ref()
+                            .map(|p| format!(" [{}]", p))
+                            .unwrap_or_default();
+                        output.push_str(&format!(
+                            "  SASS[{}]: {} @ 0x{:x}{}\n",
+                            i, instruction, address, pred_str
+                        ));
+                    }
+                }
+            }
+            output.push_str("]\n\n");
+        }
+
+        output
+    }
+
+    /// Get the underlying DIBuilder
+    pub fn get_builder(&self) -> *mut llvm_zluda::LLVMOpaqueDIBuilder {
+        self.di_builder
+    }
+}
+
+impl Drop for PtxDwarfBuilder {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.di_builder.is_null() {
+                LLVMDisposeDIBuilder(self.di_builder);
+            }
+        }
+    }
+}
+
+/// State recovery mechanism using DWARF mappings
+pub struct PtxStateRecovery {
+    mappings: Vec<DwarfMappingEntry>,
+    current_execution_point: Option<PtxSourceLocation>,
+}
+
+impl PtxStateRecovery {
+    pub fn new(mappings: Vec<DwarfMappingEntry>) -> Self {
+        Self {
+            mappings,
+            current_execution_point: None,
+        }
+    }
+
+    /// Set current execution point in PTX source
+    pub fn set_execution_point(&mut self, location: PtxSourceLocation) {
+        self.current_execution_point = Some(location);
+    }
+
+    /// Recover PTX state from target architecture debugging information
+    pub fn recover_ptx_state(&self, target_address: u64) -> Option<PtxSourceLocation> {
+        for mapping in &self.mappings {
+            for target_inst in &mapping.target_instructions {
+                match target_inst {
+                    TargetInstruction::AmdGcn { address, .. }
+                    | TargetInstruction::Sass { address, .. } => {
+                        if *address == target_address {
+                            return Some(mapping.ptx_location.clone());
+                        }
+                    }
+                    TargetInstruction::IntelSpirv { .. } => {
+                        // SPIRV doesn't have direct address mapping, use opcode matching
+                        // This would need runtime integration for proper address translation
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Get variable locations at current execution point
+    pub fn get_variable_state(&self) -> Option<&HashMap<String, VariableLocation>> {
+        if let Some(ref current_location) = self.current_execution_point {
+            for mapping in &self.mappings {
+                if mapping.ptx_location == *current_location {
+                    return Some(&mapping.variable_mappings);
+                }
+            }
+        }
+        None
+    }
+
+    /// Export current state for debugging
+    pub fn export_state_dump(&self) -> String {
+        let mut dump = String::new();
+
+        if let Some(ref location) = self.current_execution_point {
+            dump.push_str(&format!(
+                "Current PTX execution point: {}:{}:{}\n",
+                location.file, location.line, location.column
+            ));
+
+            if let Some(var_state) = self.get_variable_state() {
+                dump.push_str("Variable state:\n");
+                for (name, location) in var_state {
+                    match location {
+                        VariableLocation::Register(reg) => {
+                            dump.push_str(&format!("  {} -> register {}\n", name, reg));
+                        }
+                        VariableLocation::Memory { address, size } => {
+                            dump.push_str(&format!(
+                                "  {} -> memory 0x{:x} (size: {})\n",
+                                name, address, size
+                            ));
+                        }
+                        VariableLocation::Constant(value) => {
+                            dump.push_str(&format!("  {} -> constant {}\n", name, value));
+                        }
+                    }
+                }
+            }
+        } else {
+            dump.push_str("No current execution point set\n");
+        }
+
+        dump
+    }
+}
+
+/// Integration point for adding debug info to PTX compilation pipeline
+pub fn integrate_debug_info_generation(
+    context: LLVMContextRef,
+    module: LLVMModuleRef,
+    source_file: &str,
+) -> Result<PtxDwarfBuilder, String> {
+    unsafe { PtxDwarfBuilder::new(context, module, source_file, "ZLUDA PTX Compiler") }
+}

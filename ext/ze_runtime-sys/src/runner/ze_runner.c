@@ -4,6 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+// 定义缺少的常量 - 如果您的Level Zero版本中没有显式定义这些常量，我们自己定义它们
+// 注意：确保这些值与实际的Level Zero API兼容
+#ifndef ZE_KERNEL_FLAG_EXPLICIT_RESIDENCY
+#define ZE_KERNEL_FLAG_EXPLICIT_RESIDENCY 0x1
+#endif
+
 // 调试信息打印
 #define DEBUG_PRINT(fmt, ...) printf("ZE_RUNNER: " fmt "\n", ##__VA_ARGS__)
 
@@ -177,7 +183,7 @@ ze_runner_result_t run_spirv_kernel(
     ze_kernel_desc_t kernel_desc = {
         .stype = ZE_STRUCTURE_TYPE_KERNEL_DESC,
         .pNext = NULL,
-        .flags = 0,
+        .flags = ZE_KERNEL_FLAG_EXPLICIT_RESIDENCY,  // 尝试使用显式的内存可见性
         .pKernelName = name
     };
     
@@ -186,6 +192,70 @@ ze_runner_result_t run_spirv_kernel(
     
     if (kern_result != ZE_RESULT_SUCCESS) {
         DEBUG_PRINT("Failed to create kernel: %d", kern_result);
+        
+        // Enhanced error reporting for kernel creation failure
+        DEBUG_PRINT("=== KERNEL CREATION ERROR DETAILS ===");
+        DEBUG_PRINT("Kernel name: %s", name);
+        DEBUG_PRINT("SPIR-V module size: %zu bytes", spirv_size);
+        
+        // Try to check if the kernel name exists in the module
+        // Note: Level Zero doesn't provide a direct way to enumerate kernel names
+        // This is left here as a comment for future enhancement if API adds this capability
+        /*
+        uint32_t kernel_count = 0;
+        ze_result_t count_result = zeModuleGetKernelNames(module, &kernel_count, NULL);
+        if (count_result == ZE_RESULT_SUCCESS && kernel_count > 0) {
+            DEBUG_PRINT("Module contains %d kernels", kernel_count);
+            
+            // Get kernel names
+            const char** kernel_names = (const char**)malloc(kernel_count * sizeof(const char*));
+            if (kernel_names) {
+                if (zeModuleGetKernelNames(module, &kernel_count, kernel_names) == ZE_RESULT_SUCCESS) {
+                    DEBUG_PRINT("Available kernels in module:");
+                    for (uint32_t i = 0; i < kernel_count; i++) {
+                        DEBUG_PRINT("  - %s", kernel_names[i]);
+                    }
+                }
+                free(kernel_names);
+            }
+        }
+        */
+        DEBUG_PRINT("Error details:");
+        
+        // Check error code specifics 
+        if (kern_result == ZE_RESULT_ERROR_INVALID_ARGUMENT) {
+            DEBUG_PRINT("  Error: Invalid argument (kernel descriptor or kernel handle is NULL)");
+        }
+        else if (kern_result == ZE_RESULT_ERROR_INVALID_KERNEL_NAME) {
+            DEBUG_PRINT("  Error: Invalid kernel name (kernel '%s' not found in module)", name);
+            
+            // Print the first few bytes of the SPIR-V for debugging
+            DEBUG_PRINT("SPIR-V header (first 16 bytes, if available):");
+            if (spirv_data && spirv_size >= 16) {
+                const unsigned char* data = (const unsigned char*)spirv_data;
+                DEBUG_PRINT("  %02X %02X %02X %02X  %02X %02X %02X %02X  %02X %02X %02X %02X  %02X %02X %02X %02X",
+                    data[0], data[1], data[2], data[3], 
+                    data[4], data[5], data[6], data[7],
+                    data[8], data[9], data[10], data[11],
+                    data[12], data[13], data[14], data[15]);
+            }
+            
+            // Custom error code for kernel creation failure
+            // Forward a custom error code to identify kernel name issues
+            zeModuleDestroy(module);
+            zeCommandListDestroy(command_list);
+            zeContextDestroy(context);
+            free(devices);
+            free(drivers);
+            return 2013265937; // Custom error code for kernel name not found
+        }
+        else if (kern_result == ZE_RESULT_ERROR_MODULE_BUILD_FAILURE) {
+            DEBUG_PRINT("  Error: Module build failure");
+        }
+        else {
+            DEBUG_PRINT("  Error: Unknown error code: %d", kern_result);
+        }
+        
         zeModuleDestroy(module);
         zeCommandListDestroy(command_list);
         zeContextDestroy(context);

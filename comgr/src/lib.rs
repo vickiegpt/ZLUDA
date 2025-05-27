@@ -351,41 +351,108 @@ fn try_compile_bitcode(
         return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
     }
 
-    let mut data = unsafe { mem::zeroed() };
-    match unsafe { intel_comgr_get_data(reloc_data_set.0, 0, &mut data) } {
-        Ok(_) => eprintln!("ZLUDA VERBOSE: Successfully got output data"),
-        Err(e) => {
-            eprintln!("ZLUDA ERROR: Failed to get output data: {:?}", e);
-            return Err(e);
-        }
-    }
+    // Try each data object until we find one we can read successfully
+    for i in 0..count {
+        eprintln!(
+            "ZLUDA VERBOSE: Attempting to read output object {}/{}",
+            i + 1,
+            count
+        );
 
-    // Get the content of the output data
-    let mut buffer = Vec::new();
-    let mut size = 0;
-    unsafe {
-        // Get the size of the data
-        match intel_comgr_data_get_bytes(data, std::ptr::null_mut(), &mut size) {
-            Ok(_) => eprintln!("ZLUDA VERBOSE: Output data size: {} bytes", size),
+        let mut data = unsafe { mem::zeroed() };
+        match unsafe { intel_comgr_get_data(reloc_data_set.0, i, &mut data) } {
+            Ok(_) => eprintln!("ZLUDA VERBOSE: Successfully got output data #{}", i),
             Err(e) => {
-                eprintln!("ZLUDA ERROR: Failed to get output data size: {:?}", e);
-                return Err(e);
+                eprintln!("ZLUDA ERROR: Failed to get output data #{}: {:?}", i, e);
+                continue;
             }
         }
+
+        // Get the data kind
+        let mut kind = intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_RELOCATABLE;
+        match unsafe { intel_comgr_get_data_kind(data, &mut kind) } {
+            Ok(_) => {
+                let kind_str = match kind.0 {
+                    1 => "SOURCE",
+                    2 => "INCLUDE",
+                    3 => "PRECOMPILED_HEADER",
+                    4 => "DIAGNOSTIC",
+                    5 => "LOG",
+                    6 => "BC",
+                    7 => "RELOCATABLE",
+                    8 => "EXECUTABLE",
+                    9 => "BYTES",
+                    _ => "UNKNOWN",
+                };
+                eprintln!("ZLUDA VERBOSE: Output data kind: {}", kind_str);
+            }
+            Err(e) => {
+                eprintln!("ZLUDA WARNING: Failed to get data kind: {:?}", e);
+            }
+        }
+
+        // Try to get a handle to any data name
+        let mut name_size = 0;
+        let mut name_ptr = std::ptr::null_mut();
+        match unsafe { intel_comgr_get_data_name(data, &mut name_size, name_ptr) } {
+            Ok(_) => {
+                if name_size > 0 {
+                    let mut name_buffer = vec![0u8; name_size];
+                    match unsafe {
+                        intel_comgr_get_data_name(
+                            data,
+                            &mut name_size,
+                            name_buffer.as_mut_ptr() as *mut i8,
+                        )
+                    } {
+                        Ok(_) => {
+                            if let Ok(name) = std::str::from_utf8(&name_buffer[..name_size - 1]) {
+                                eprintln!("ZLUDA VERBOSE: Output data name: {}", name);
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+
+        // Get the content of the output data
+        let mut buffer = Vec::new();
+        let mut size = 0;
+
+        // First try to get the size of the data
+        let size_result =
+            unsafe { intel_comgr_data_get_bytes(data, std::ptr::null_mut(), &mut size) };
+
+        if let Err(e) = size_result {
+            eprintln!(
+                "ZLUDA WARNING: Failed to get output data size for object #{}: {:?}",
+                i, e
+            );
+            unsafe { intel_comgr_release_data(data).ok() };
+            continue;
+        }
+
+        eprintln!("ZLUDA VERBOSE: Output data #{} size: {} bytes", i, size);
 
         if size > 0 {
             // Allocate buffer and get bytes
             buffer.reserve(size);
-            buffer.set_len(size);
-            match intel_comgr_data_get_bytes(
-                data,
-                buffer.as_mut_ptr() as *mut std::os::raw::c_void,
-                &mut size,
-            ) {
+            unsafe {
+                buffer.set_len(size);
+            }
+            match unsafe {
+                intel_comgr_data_get_bytes(
+                    data,
+                    buffer.as_mut_ptr() as *mut std::os::raw::c_void,
+                    &mut size,
+                )
+            } {
                 Ok(_) => {
                     eprintln!(
-                        "ZLUDA VERBOSE: Successfully copied output data of {} bytes",
-                        size
+                        "ZLUDA VERBOSE: Successfully copied output data #{} of {} bytes",
+                        i, size
                     );
 
                     // Check if the buffer contains our mock marker
@@ -400,7 +467,10 @@ fn try_compile_bitcode(
                     if buffer.len() >= 4 && &buffer[0..4] == b"\x7fELF" {
                         eprintln!("ZLUDA VERBOSE: Output has valid ELF header");
                     } else {
-                        eprintln!("ZLUDA WARNING: Output does not have valid ELF header");
+                        eprintln!(
+                            "ZLUDA WARNING: Output #{} does not have valid ELF header",
+                            i
+                        );
 
                         // Try to display the first 32 bytes for debugging
                         if buffer.len() >= 32 {
@@ -409,34 +479,35 @@ fn try_compile_bitcode(
                             eprintln!("ZLUDA DEBUG: First 32 bytes: {}", prefix.join(" "));
                         }
                     }
+
+                    // Release resources
+                    unsafe { intel_comgr_release_data(data).ok() };
+
+                    // Return successfully
+                    eprintln!(
+                        "ZLUDA VERBOSE: Compilation completed successfully, output size: {} bytes",
+                        buffer.len()
+                    );
+                    return Ok(buffer);
                 }
                 Err(e) => {
-                    eprintln!("ZLUDA ERROR: Failed to copy output data: {:?}", e);
-                    return Err(e);
+                    eprintln!("ZLUDA WARNING: Failed to copy output data #{}: {:?}", i, e);
                 }
             }
         } else {
-            eprintln!("ZLUDA WARNING: Output data size is 0");
+            eprintln!("ZLUDA WARNING: Output data #{} size is 0", i);
         }
 
-        // Release resources
-        match intel_comgr_release_data(data) {
-            Ok(_) => eprintln!("ZLUDA VERBOSE: Released output data resources"),
-            Err(e) => {
-                eprintln!(
-                    "ZLUDA ERROR: Failed to release output data resources: {:?}",
-                    e
-                );
-                return Err(e);
-            }
-        }
+        // Release resources and try the next data object
+        unsafe { intel_comgr_release_data(data).ok() };
     }
 
+    // If we reach here, we've tried all data objects and none worked
     eprintln!(
-        "ZLUDA VERBOSE: Compilation completed successfully, output size: {} bytes",
-        buffer.len()
+        "ZLUDA ERROR: Failed to read any valid output data from {} objects",
+        count
     );
-    Ok(buffer)
+    Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR)
 }
 
 // Helper implementation for DataSet with Intel support

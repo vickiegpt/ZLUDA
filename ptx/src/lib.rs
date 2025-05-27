@@ -1,6 +1,8 @@
 #![feature(str_from_raw_parts)]
 
 pub(crate) mod pass;
+pub mod debug;
+pub mod state_recovery;
 #[cfg(test)]
 mod test;
 

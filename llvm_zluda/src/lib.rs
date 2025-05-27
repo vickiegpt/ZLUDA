@@ -78,4 +78,19 @@ extern "C" {
         scope: *const i8,
         Name: *const i8,
     ) -> LLVMValueRef;
+
+    // DWARF Debug Info functions
+    pub fn LLVMZludaSetCurrentDebugLocation(
+        Builder: LLVMBuilderRef,
+        L: LLVMMetadataRef,
+    );
+
+    pub fn LLVMZludaInsertDeclareAtEnd(
+        Builder: LLVMBuilderRef,
+        Storage: LLVMValueRef,
+        VarInfo: LLVMMetadataRef,
+        Expr: LLVMMetadataRef,
+        DL: LLVMMetadataRef,
+        InsertAtEnd: LLVMBasicBlockRef,
+    ) -> LLVMValueRef;
 }

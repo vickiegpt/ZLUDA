@@ -1,5 +1,4 @@
 mod command_wrapper;
-pub mod intel_comgr;
 
 use std::ffi::{CStr, CString, c_char, c_int, c_uint};
 use std::num::NonZeroU32;
@@ -196,32 +195,22 @@ pub fn intel_comgr_create_data(
     kind: intel_comgr_data_kind_t,
     data: *mut intel_comgr_data_t,
 ) -> intel_comgr_status_t {
-    // Validate params
-    if data.is_null() {
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
-    }
-
-    // Create a new handle
+    // Create a new data object with a next handle
+    let mut store = command_wrapper::DATA_STORE.lock().unwrap();
     let handle = command_wrapper::get_next_handle();
-
-    // Store empty data content
-    {
-        let mut data_store = command_wrapper::DATA_STORE.lock().unwrap();
-        data_store.insert(
-            handle,
-            command_wrapper::DataContent {
-                kind,
-                content: Vec::new(),
-                name: None,
-            },
-        );
-    }
-
-    // Return the handle
+    let data_obj = intel_comgr_data_t { handle };
+    store.insert(
+        handle,
+        command_wrapper::DataContent {
+            kind,
+            content: Vec::new(),
+            name: None,
+        },
+    );
+    // Set the output
     unsafe {
-        *data = intel_comgr_data_t { handle };
+        *data = data_obj;
     }
-
     Ok(())
 }
 
@@ -489,20 +478,15 @@ pub fn intel_comgr_get_data_kind(
     data: intel_comgr_data_t,
     kind: *mut intel_comgr_data_kind_t,
 ) -> intel_comgr_status_t {
-    // Validate params
-    if kind.is_null() {
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
-    }
-
-    // Get data kind from store
-    let data_store = command_wrapper::DATA_STORE.lock().unwrap();
-    if let Some(data_content) = data_store.get(&data.handle) {
-        unsafe {
-            *kind = data_content.kind;
+    let store = command_wrapper::DATA_STORE.lock().unwrap();
+    match store.get(&data.handle) {
+        Some(data_content) => {
+            unsafe {
+                *kind = data_content.kind;
+            }
+            Ok(())
         }
-        Ok(())
-    } else {
-        Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT)
+        None => Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
     }
 }
 
@@ -670,6 +654,62 @@ pub fn intel_comgr_data_get_bytes(
         Ok(())
     } else {
         Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT)
+    }
+}
+
+pub fn intel_comgr_get_data_name(
+    data: intel_comgr_data_t,
+    size: *mut usize,
+    name: *mut i8,
+) -> intel_comgr_status_t {
+    let store = command_wrapper::DATA_STORE.lock().unwrap();
+    match store.get(&data.handle) {
+        Some(data_content) => {
+            match &data_content.name {
+                Some(name_str) => {
+                    let name_bytes = name_str.as_bytes();
+                    let name_len = name_bytes.len() + 1; // +1 for null terminator
+
+                    unsafe {
+                        *size = name_len;
+                    }
+
+                    // If name buffer is provided, copy the name
+                    if !name.is_null() {
+                        if name_len > 1 {
+                            // Copy string contents if we have a name
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    name_bytes.as_ptr() as *const i8,
+                                    name,
+                                    name_bytes.len(),
+                                );
+                                // Add null terminator
+                                *name.add(name_bytes.len()) = 0;
+                            }
+                        } else {
+                            // Just add null terminator if empty name
+                            unsafe {
+                                *name = 0;
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+                None => {
+                    // No name, return size 1 (just the null terminator)
+                    unsafe {
+                        *size = 1;
+                        if !name.is_null() {
+                            *name = 0;
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
+        None => Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
     }
 }
 

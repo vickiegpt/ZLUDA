@@ -1,0 +1,98 @@
+// Sample PTX kernel for debugging demonstration
+.version 7.0
+.target sm_75
+.address_size 64
+
+// Kernel entry point
+.entry vector_add(.param .u64 a_ptr, .param .u64 b_ptr, .param .u64 c_ptr, .param .u32 n)
+{
+    .reg .u32 %tid, %ntid, %ctaid, %nctaid;
+    .reg .u64 %rd<10>;
+    .reg .f32 %f<10>;
+    .reg .pred %p<5>;
+    
+    // Get thread and block indices
+    mov.u32 %tid, %tid.x;           // Line 12: Get thread ID
+    mov.u32 %ctaid, %ctaid.x;       // Line 13: Get block ID  
+    mov.u32 %ntid, %ntid.x;         // Line 14: Get block size
+    
+    // Calculate global thread index
+    mad.lo.u32 %tid, %ctaid, %ntid, %tid;  // Line 17: global_id = blockIdx.x * blockDim.x + threadIdx.x
+    
+    // Load parameters
+    ld.param.u64 %rd1, [a_ptr];     // Line 20: Load pointer a
+    ld.param.u64 %rd2, [b_ptr];     // Line 21: Load pointer b  
+    ld.param.u64 %rd3, [c_ptr];     // Line 22: Load pointer c
+    ld.param.u32 %r1, [n];          // Line 23: Load array size
+    
+    // Bounds check
+    setp.ge.u32 %p1, %tid, %r1;     // Line 26: Check if tid >= n
+    @%p1 bra END;                   // Line 27: Branch if out of bounds
+    
+    // Calculate addresses
+    cvt.u64.u32 %rd4, %tid;         // Line 30: Convert tid to 64-bit
+    shl.b64 %rd4, %rd4, 2;          // Line 31: Multiply by sizeof(float) = 4
+    
+    add.u64 %rd5, %rd1, %rd4;       // Line 33: &a[tid]
+    add.u64 %rd6, %rd2, %rd4;       // Line 34: &b[tid]  
+    add.u64 %rd7, %rd3, %rd4;       // Line 35: &c[tid]
+    
+    // Load values
+    ld.global.f32 %f1, [%rd5];      // Line 38: Load a[tid]
+    ld.global.f32 %f2, [%rd6];      // Line 39: Load b[tid]
+    
+    // Perform addition
+    add.f32 %f3, %f1, %f2;          // Line 42: c_val = a_val + b_val
+    
+    // Store result
+    st.global.f32 [%rd7], %f3;      // Line 45: Store c[tid] = c_val
+    
+END:
+    ret;                            // Line 48: Return
+}
+
+// Device function example for call stack testing
+.func (.reg .f32 result) multiply_by_two(.reg .f32 input)
+{
+    .reg .f32 %f<3>;
+    
+    mov.f32 %f1, input;             // Line 55: Load input parameter
+    add.f32 %f2, %f1, %f1;          // Line 56: result = input + input (multiply by 2)
+    mov.f32 result, %f2;            // Line 57: Store result
+    
+    ret;                            // Line 59: Return
+}
+
+// Kernel using device function
+.entry test_function_calls(.param .u64 data_ptr, .param .u32 size)
+{
+    .reg .u32 %tid;
+    .reg .u64 %rd<5>;
+    .reg .f32 %f<5>;
+    
+    // Get thread ID
+    mov.u32 %tid, %tid.x;           // Line 68: Get thread ID
+    
+    // Load parameters
+    ld.param.u64 %rd1, [data_ptr];  // Line 71: Load data pointer
+    ld.param.u32 %r1, [size];       // Line 72: Load size
+    
+    // Bounds check
+    setp.ge.u32 %p1, %tid, %r1;     // Line 75: Check bounds
+    @%p1 bra FUNC_END;              // Line 76: Branch if out of bounds
+    
+    // Calculate address and load value
+    cvt.u64.u32 %rd2, %tid;         // Line 79: Convert to 64-bit
+    shl.b64 %rd2, %rd2, 2;          // Line 80: Multiply by 4
+    add.u64 %rd3, %rd1, %rd2;       // Line 81: Calculate address
+    ld.global.f32 %f1, [%rd3];      // Line 82: Load value
+    
+    // Call device function
+    call (%f2), multiply_by_two, (%f1);  // Line 85: Call function
+    
+    // Store result
+    st.global.f32 [%rd3], %f2;      // Line 88: Store result
+    
+FUNC_END:
+    ret;                            // Line 91: Return
+}
