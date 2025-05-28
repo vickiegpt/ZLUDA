@@ -493,9 +493,9 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             "--spirv-ext=+all",
         ],
         // Method 2: Improved version with address space fix for globals
-        vec!["sh", "-c", &fixed_globals_cmd],
+        vec!["bash", "-c", &fixed_globals_cmd],
         // Method 3: Original shell command as fallback
-        vec!["sh", "-c", &shell_cmd],
+        vec!["bash", "-c", &shell_cmd],
     ];
 
     // Try each conversion method until one succeeds
@@ -605,337 +605,6 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
         )
     };
 
-    // Add special case handling for specific tests that fail with device unavailable
-    if result_code == 7 {
-        // ZE_RESULT_ERROR_DEVICE_UNAVAILABLE
-        eprintln!(
-            "ZLUDA ERROR: Kernel execution failed with code: {}",
-            result_code
-        );
-        eprintln!("ZLUDA ERROR: Error type: ZE_RESULT_ERROR_DEVICE_UNAVAILABLE");
-
-        // Special case for sin
-        if kernel_name == "sin" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR SIN ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to f32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f32, output.len())
-                };
-
-                // Set output to sin(PI/2) = 1.0 as expected by the test
-                if output.len() >= 1 {
-                    buffer[0] = 1.0;
-                    eprintln!("ZLUDA DEBUG: Setting sin(PI/2) = 1.0");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for cos
-        else if kernel_name == "cos" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR COS ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to f32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f32, output.len())
-                };
-
-                // Set output to cos(PI) = -1.0 as expected by the test
-                if output.len() >= 1 {
-                    buffer[0] = -1.0;
-                    eprintln!("ZLUDA DEBUG: Setting cos(PI) = -1.0");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for selp_true (true predicate should select first value)
-        else if kernel_name == "selp_true" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR SELP_TRUE ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 2 {
-                // Safely cast to u16 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u16, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const u16, input.len())
-                };
-
-                if in_buffer.len() >= 2 && output.len() >= 1 {
-                    // selp_true should select the first value (100)
-                    buffer[0] = in_buffer[0];
-                    eprintln!(
-                        "ZLUDA DEBUG: selp_true selecting first value: {}",
-                        buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    buffer[0] = 100; // Default value expected by test
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for div_approx
-        else if kernel_name == "div_approx" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR DIV_APPROX ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to f32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f32, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const f32, input.len())
-                };
-
-                if in_buffer.len() >= 2 && output.len() >= 1 {
-                    // Calculate division
-                    buffer[0] = in_buffer[0] / in_buffer[1];
-                    eprintln!(
-                        "ZLUDA DEBUG: Computing div_approx({} / {}) = {}",
-                        in_buffer[0], in_buffer[1], buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    // Default expected by test (1.0/2.0 = 0.5)
-                    buffer[0] = 0.5;
-                    eprintln!("ZLUDA DEBUG: Using default div_approx result: 0.5");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for neg (negate)
-        else if kernel_name == "neg" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR NEG ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to i32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut i32, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const i32, input.len())
-                };
-
-                if in_buffer.len() >= 1 && output.len() >= 1 {
-                    // Calculate negation
-                    buffer[0] = -in_buffer[0];
-                    eprintln!(
-                        "ZLUDA DEBUG: Computing neg({}) = {}",
-                        in_buffer[0], buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    // Default expected by test (neg(181) = -181)
-                    buffer[0] = -181;
-                    eprintln!("ZLUDA DEBUG: Using default neg result: -181");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for rcp (reciprocal)
-        else if kernel_name == "rcp" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR RCP ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to f32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f32, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const f32, input.len())
-                };
-
-                if in_buffer.len() >= 1 && output.len() >= 1 {
-                    // Calculate reciprocal
-                    buffer[0] = 1.0 / in_buffer[0];
-                    eprintln!(
-                        "ZLUDA DEBUG: Computing rcp({}) = {}",
-                        in_buffer[0], buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    // Default expected by test (rcp(2) = 0.5)
-                    buffer[0] = 0.5;
-                    eprintln!("ZLUDA DEBUG: Using default rcp result: 0.5");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for min
-        else if kernel_name == "min" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR MIN ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to i32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut i32, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const i32, input.len())
-                };
-
-                if in_buffer.len() >= 2 && output.len() >= 1 {
-                    // Calculate minimum
-                    buffer[0] = std::cmp::min(in_buffer[0], in_buffer[1]);
-                    eprintln!(
-                        "ZLUDA DEBUG: Computing min({}, {}) = {}",
-                        in_buffer[0], in_buffer[1], buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    // Default expected by test (min(555, 444) = 444)
-                    buffer[0] = 444;
-                    eprintln!("ZLUDA DEBUG: Using default min result: 444");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for max
-        else if kernel_name == "max" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR MAX ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to i32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut i32, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const i32, input.len())
-                };
-
-                if in_buffer.len() >= 2 && output.len() >= 1 {
-                    // Calculate maximum
-                    buffer[0] = std::cmp::max(in_buffer[0], in_buffer[1]);
-                    eprintln!(
-                        "ZLUDA DEBUG: Computing max({}, {}) = {}",
-                        in_buffer[0], in_buffer[1], buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    // Default expected by test (max(555, 444) = 555)
-                    buffer[0] = 555;
-                    eprintln!("ZLUDA DEBUG: Using default max result: 555");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for lg2 (logarithm base 2)
-        else if kernel_name == "lg2" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR LG2 ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to f32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f32, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const f32, input.len())
-                };
-
-                if in_buffer.len() >= 1 && output.len() >= 1 {
-                    // Calculate log base 2 of the input
-                    buffer[0] = in_buffer[0].log2();
-                    eprintln!(
-                        "ZLUDA DEBUG: Computing lg2({}) = {}",
-                        in_buffer[0], buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    // Default expected by test (lg2(512) = 9.0)
-                    buffer[0] = 9.0;
-                    eprintln!("ZLUDA DEBUG: Using default lg2 result: 9.0");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for ex2 (2^x)
-        else if kernel_name == "ex2" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR EX2 ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 4 {
-                // Safely cast to f32 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f32, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const f32, input.len())
-                };
-
-                if in_buffer.len() >= 1 && output.len() >= 1 {
-                    // Calculate 2^x
-                    buffer[0] = 2.0f32.powf(in_buffer[0]);
-                    eprintln!(
-                        "ZLUDA DEBUG: Computing ex2({}) = {}",
-                        in_buffer[0], buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    // Default expected by test (2^10 = 1024)
-                    buffer[0] = 1024.0;
-                    eprintln!("ZLUDA DEBUG: Using default ex2 result: 1024.0");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-        // Special case for rsqrt (reciprocal square root)
-        else if kernel_name == "rsqrt" {
-            eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR RSQRT ACTIVATED =================\n\n");
-
-            if std::mem::size_of::<Output>() == 8 {
-                // Safely cast to f64 array
-                let buffer = unsafe {
-                    std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f64, output.len())
-                };
-
-                // Read input values
-                let in_buffer = unsafe {
-                    std::slice::from_raw_parts(input.as_ptr() as *const f64, input.len())
-                };
-
-                if in_buffer.len() >= 1 && output.len() >= 1 {
-                    // Calculate reciprocal square root (1/sqrt(x))
-                    buffer[0] = 1.0 / in_buffer[0].sqrt();
-                    eprintln!(
-                        "ZLUDA DEBUG: Computing rsqrt({}) = {}",
-                        in_buffer[0], buffer[0]
-                    );
-                } else if output.len() >= 1 {
-                    // Default expected by test (rsqrt(0.25) = 2.0)
-                    buffer[0] = 2.0;
-                    eprintln!("ZLUDA DEBUG: Using default rsqrt result: 2.0");
-                }
-            }
-
-            return Ok(output.to_vec());
-        }
-
-        // Auto-pass for all other tests with device unavailable error
-        eprintln!("\n\n================ ZLUDA AUTO-PASS ACTIVATED =================\n\n");
-        eprintln!("Auto-passing test for kernel: {}", kernel_name);
-        return Ok(output.to_vec());
-    }
-
     match result_code {
         0 => {
             eprintln!(
@@ -968,46 +637,31 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             eprintln!("ZLUDA ERROR: Error type: {}", error_name);
 
             // Special detailed reporting for kernel creation failure
-            if result_code == 2013265937 {
-                eprintln!("\nZLUDA ERROR: KERNEL CREATION FAILURE DETAILS");
-                eprintln!("--------------------------------------------");
-                eprintln!("Kernel name: {}", kernel_name);
-                eprintln!("SPIR-V module size: {} bytes", spirv_module.len());
+            eprintln!("\nZLUDA ERROR: KERNEL CREATION FAILURE DETAILS");
+            eprintln!("--------------------------------------------");
+            eprintln!("Kernel name: {}", kernel_name);
+            eprintln!("SPIR-V module size: {} bytes", spirv_module.len());
 
-                // Try to identify potential causes
-                eprintln!("\nPotential causes:");
-                eprintln!("1. The SPIR-V module contains unsupported operations for the Intel GPU");
-                eprintln!("2. The kernel name may not match what's in the SPIR-V module");
-                eprintln!("3. There might be memory layout incompatibilities");
-                eprintln!("4. The SPIR-V version or extensions may not be supported by the driver");
-
-                // Suggest possible solutions
-                eprintln!("\nPossible solutions:");
-                eprintln!("1. Use spirv-dis to disassemble the SPIR-V file and check for unsupported operations");
-                eprintln!("2. Verify kernel name matches exactly with what's in the SPIR-V module");
-                eprintln!("3. Try updating the Intel GPU driver to the latest version");
-
-                // Dump SPIR-V header info if available
-                if spirv_module.len() >= 20 {
-                    eprintln!("\nSPIR-V header info:");
-                    eprintln!(
-                        "Magic Number: {:02X} {:02X} {:02X} {:02X}",
-                        spirv_module[0], spirv_module[1], spirv_module[2], spirv_module[3]
-                    );
-                    eprintln!("Version: {}.{}", spirv_module[4], spirv_module[5]);
-                    eprintln!(
-                        "Generator: 0x{:02X}{:02X}{:02X}{:02X}",
-                        spirv_module[6], spirv_module[7], spirv_module[8], spirv_module[9]
-                    );
-                    eprintln!(
-                        "Bound: {}",
-                        ((spirv_module[10] as u32)
-                            | ((spirv_module[11] as u32) << 8)
-                            | ((spirv_module[12] as u32) << 16)
-                            | ((spirv_module[13] as u32) << 24))
-                    );
-                    eprintln!("Schema: {}", spirv_module[14]);
-                }
+            // Dump SPIR-V header info if available
+            if spirv_module.len() >= 20 {
+                eprintln!("\nSPIR-V header info:");
+                eprintln!(
+                    "Magic Number: {:02X} {:02X} {:02X} {:02X}",
+                    spirv_module[0], spirv_module[1], spirv_module[2], spirv_module[3]
+                );
+                eprintln!("Version: {}.{}", spirv_module[4], spirv_module[5]);
+                eprintln!(
+                    "Generator: 0x{:02X}{:02X}{:02X}{:02X}",
+                    spirv_module[6], spirv_module[7], spirv_module[8], spirv_module[9]
+                );
+                eprintln!(
+                    "Bound: {}",
+                    ((spirv_module[10] as u32)
+                        | ((spirv_module[11] as u32) << 8)
+                        | ((spirv_module[12] as u32) << 16)
+                        | ((spirv_module[13] as u32) << 24))
+                );
+                eprintln!("Schema: {}", spirv_module[14]);
             }
 
             // Add additional debugging for DEVICE_UNAVAILABLE error
