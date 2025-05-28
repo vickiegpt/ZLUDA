@@ -211,368 +211,6 @@ fn test_hip_assert<
     output: &mut [Output],
 ) -> Result<(), Box<dyn error::Error + 'a>> {
     // Special case handling for tests that cause parser errors
-    if name == "stateful_ld_st_ntid"
-        || name == "stateful_ld_st_ntid_chain"
-        || name == "stateful_ld_st_ntid_sub"
-        || name == "cvt_s64_s32"
-        || name == "cvt_s16_s8"
-    {
-        eprintln!(
-            "\n\n================ ZLUDA SPECIAL HANDLING FOR {} ACTIVATED =================\n\n",
-            name
-        );
-
-        // Create a result vector with default values of the expected size
-        let mut result = vec![Output::default(); output.len()];
-
-        // Handle each test specially based on its expected output pattern
-        match name {
-            "stateful_ld_st_ntid" => {
-                if output.len() >= 1 && std::mem::size_of::<Output>() == 8 {
-                    // Safely cast to u64 array
-                    let buffer = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            result.as_mut_ptr() as *mut u64,
-                            result.len(),
-                        )
-                    };
-
-                    // Set the expected output directly
-                    buffer[0] = 123;
-                    eprintln!("ZLUDA DEBUG: Setting stateful_ld_st_ntid result to 123");
-                }
-            }
-            "stateful_ld_st_ntid_chain" => {
-                if output.len() >= 1 && std::mem::size_of::<Output>() == 8 {
-                    // Safely cast to u64 array
-                    let buffer = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            result.as_mut_ptr() as *mut u64,
-                            result.len(),
-                        )
-                    };
-
-                    // Set the expected output directly
-                    buffer[0] = 12651;
-                    eprintln!("ZLUDA DEBUG: Setting stateful_ld_st_ntid_chain result to 12651");
-                }
-            }
-            "stateful_ld_st_ntid_sub" => {
-                if output.len() >= 1 && std::mem::size_of::<Output>() == 8 {
-                    // Safely cast to u64 array
-                    let buffer = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            result.as_mut_ptr() as *mut u64,
-                            result.len(),
-                        )
-                    };
-
-                    // Set the expected output directly
-                    buffer[0] = 96311;
-                    eprintln!("ZLUDA DEBUG: Setting stateful_ld_st_ntid_sub result to 96311");
-                }
-            }
-            "cvt_s64_s32" => {
-                if output.len() >= 1 && std::mem::size_of::<Output>() == 8 {
-                    // Safely cast to i64 array
-                    let buffer = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            result.as_mut_ptr() as *mut i64,
-                            result.len(),
-                        )
-                    };
-
-                    // Set the expected output directly
-                    buffer[0] = -1;
-                    eprintln!("ZLUDA DEBUG: Setting cvt_s64_s32 result to -1");
-                }
-            }
-            "cvt_s16_s8" => {
-                if output.len() >= 1 && std::mem::size_of::<Output>() == 4 {
-                    // Safely cast to u32 array
-                    let buffer = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            result.as_mut_ptr() as *mut u32,
-                            result.len(),
-                        )
-                    };
-
-                    // Set the expected output directly
-                    buffer[0] = 0xFFFFFFC2;
-                    eprintln!("ZLUDA DEBUG: Setting cvt_s16_s8 result to 0xFFFFFFC2");
-                }
-            }
-            _ => {}
-        }
-
-        // Copy the result to the output
-        for i in 0..std::cmp::min(output.len(), result.len()) {
-            output[i] = result[i];
-        }
-
-        // Return success
-        return Ok(());
-    }
-    // Special case handling for atom_inc test
-    if name == "atom_inc" {
-        eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR ATOM_INC ACTIVATED =================\n\n");
-
-        // For atom_inc test, just set the values directly
-        if output.len() >= 3 && std::mem::size_of::<Output>() == 4 {
-            // Safely cast to u32 array - atom_inc test expects 32-bit values
-            let buffer = unsafe {
-                std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u32, output.len())
-            };
-            // Set values according to the expected PTX behavior
-            buffer[0] = 100; // Original value
-            buffer[1] = 101; // Value after first increment
-            buffer[2] = 0; // Value after second increment (wrap at 101)
-
-            return Ok(());
-        }
-    }
-
-    // Special case handling for atom_cas test
-    if name == "atom_cas" {
-        eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR ATOM_CAS ACTIVATED =================\n\n");
-
-        // For atom_cas test, just set the expected output values
-        if output.len() >= 2 && std::mem::size_of::<Output>() == 4 {
-            // Safely cast to u32 array
-            let buffer = unsafe {
-                std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u32, output.len())
-            };
-
-            // Set values according to the expected PTX behavior for atom_cas
-            buffer[0] = 91; // Original value
-            buffer[1] = 100; // New value after CAS
-
-            return Ok(());
-        }
-    }
-
-    // Special case handling for shared_variable test
-    if name == "shared_variable" {
-        eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR SHARED_VARIABLE ACTIVATED =================\n\n");
-
-        // For shared_variable test, just set the expected output values
-        if output.len() >= 1 && std::mem::size_of::<Output>() == 8 {
-            // Safely cast to u64 array - shared_variable test expects 64-bit values
-            let buffer = unsafe {
-                std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u64, output.len())
-            };
-
-            // Read input value and mirror it to output
-            let input_buffer =
-                unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u64, input.len()) };
-
-            if input.len() >= 1 {
-                // Copy input to output (simulating shared memory)
-                buffer[0] = input_buffer[0];
-            } else {
-                // Default value if no input
-                buffer[0] = 42;
-            }
-
-            return Ok(());
-        }
-    }
-
-    // Special case handling for sqrt test
-    if name == "sqrt" {
-        eprintln!(
-            "\n\n================ ZLUDA SPECIAL HANDLING FOR SQRT ACTIVATED =================\n\n"
-        );
-
-        // For sqrt test, just set the expected output values
-        if output.len() >= 1 && std::mem::size_of::<Output>() == 4 {
-            // Safely cast to f32 array - sqrt test expects 32-bit values
-            let buffer = unsafe {
-                std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f32, output.len())
-            };
-
-            // Set the expected value (sqrt of 0.25 = 0.5)
-            buffer[0] = 0.5;
-
-            return Ok(());
-        }
-    }
-
-    // Special case handling for shared_unify_local test
-    if name == "shared_unify_local" {
-        eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR SHARED_UNIFY_LOCAL ACTIVATED =================\n\n");
-
-        // For shared_unify_local test, simulate the external shared array adding the inputs together
-        if output.len() >= 1
-            && input.len() >= 2
-            && std::mem::size_of::<Output>() == 8
-            && std::mem::size_of::<Input>() == 8
-        {
-            // Safely cast to u64 arrays since this test works with 64-bit values
-            let out_buffer = unsafe {
-                std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u64, output.len())
-            };
-
-            let in_buffer =
-                unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u64, input.len()) };
-
-            // Sum the input values as per the PTX code which stores the first value in shared memory
-            // and adds the second value to it
-            if in_buffer.len() >= 2 {
-                out_buffer[0] = in_buffer[0] + in_buffer[1];
-                eprintln!(
-                    "ZLUDA DEBUG: Simulating shared memory operation: {} + {} = {}",
-                    in_buffer[0], in_buffer[1], out_buffer[0]
-                );
-            }
-
-            return Ok(());
-        }
-    }
-
-    // Special case handling for shared_unify_extern test
-    if name == "shared_unify_extern" {
-        eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR SHARED_UNIFY_EXTERN ACTIVATED =================\n\n");
-
-        // For shared_unify_extern test, simulate the external shared array adding the inputs together
-        if output.len() >= 1
-            && input.len() >= 2
-            && std::mem::size_of::<Output>() == 8
-            && std::mem::size_of::<Input>() == 8
-        {
-            // Safely cast to u64 arrays since this test works with 64-bit values
-            let out_buffer = unsafe {
-                std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u64, output.len())
-            };
-
-            let in_buffer =
-                unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u64, input.len()) };
-
-            // Sum the input values as per the PTX code
-            if in_buffer.len() >= 2 {
-                out_buffer[0] = in_buffer[0] + in_buffer[1];
-                eprintln!(
-                    "ZLUDA DEBUG: Simulating shared memory operation: {} + {} = {}",
-                    in_buffer[0], in_buffer[1], out_buffer[0]
-                );
-            }
-
-            return Ok(());
-        }
-    }
-
-    // Special case handling for extern_shared test
-    if name == "extern_shared" {
-        eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR EXTERN_SHARED ACTIVATED =================\n\n");
-
-        // For extern_shared test, just pass through the input value
-        if output.len() >= 1
-            && input.len() >= 1
-            && std::mem::size_of::<Output>() == 8
-            && std::mem::size_of::<Input>() == 8
-        {
-            // Safely cast to u64 arrays since this test works with 64-bit values
-            let out_buffer = unsafe {
-                std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut u64, output.len())
-            };
-
-            let in_buffer =
-                unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u64, input.len()) };
-
-            // Pass through the value from input to output
-            if in_buffer.len() >= 1 {
-                out_buffer[0] = in_buffer[0];
-                eprintln!(
-                    "ZLUDA DEBUG: Simulating extern_shared: {} -> {}",
-                    in_buffer[0], out_buffer[0]
-                );
-            }
-
-            return Ok(());
-        }
-    }
-
-    // Special case handling for extern_shared_call test
-    if name == "extern_shared_call" {
-        eprintln!("\n\n================ ZLUDA SPECIAL HANDLING FOR EXTERN_SHARED_CALL ACTIVATED =================\n\n");
-
-        // Create a result vector with the same size as the output
-        let mut result = vec![Output::default(); output.len()];
-
-        if result.len() >= 1 && std::mem::size_of::<Output>() == 8 {
-            // Safely cast to u64 array
-            let buffer = unsafe {
-                std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u64, result.len())
-            };
-
-            // Read input values
-            let in_buffer =
-                unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u64, input.len()) };
-
-            if in_buffer.len() >= 1 {
-                // Add 2 to input value (matches the PTX which adds 2 in a function call)
-                buffer[0] = in_buffer[0] + 2;
-                eprintln!(
-                    "ZLUDA DEBUG: Simulating extern_shared_call: {} + 2 = {}",
-                    in_buffer[0], buffer[0]
-                );
-            } else {
-                // Default value if input is not as expected
-                buffer[0] = 123; // Expected test result
-            }
-        }
-
-        // Copy values to the output buffer for compatibility with test framework
-        for i in 0..std::cmp::min(output.len(), result.len()) {
-            output[i] = result[i];
-        }
-
-        // Return unit type as expected by the function signature
-        return Ok(());
-    }
-
-    // Special case handling for xor test
-    if name == "xor" {
-        eprintln!(
-            "\n\n================ ZLUDA SPECIAL HANDLING FOR XOR ACTIVATED =================\n\n"
-        );
-
-        // Create a result vector with the same size as the output
-        let mut result = vec![Output::default(); output.len()];
-
-        if result.len() >= 1 && std::mem::size_of::<Output>() == 4 {
-            // Safely cast to u32 array
-            let buffer = unsafe {
-                std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u32, result.len())
-            };
-
-            // Read input values - expected to be u32s
-            let in_buffer =
-                unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u32, input.len()) };
-
-            if in_buffer.len() >= 2 {
-                // Perform XOR operation as expected by the test
-                buffer[0] = in_buffer[0] ^ in_buffer[1];
-                eprintln!(
-                    "ZLUDA DEBUG: Simulating XOR operation: 0x{:08x} ^ 0x{:08x} = 0x{:08x}",
-                    in_buffer[0], in_buffer[1], buffer[0]
-                );
-            } else {
-                // Default value from test_ptx macro
-                buffer[0] = 0b10110100100000010100110000101110u32;
-                eprintln!("ZLUDA DEBUG: Using default XOR result: 0x{:08x}", buffer[0]);
-            }
-        }
-
-        // Copy values to the output buffer for compatibility with test framework
-        for i in 0..std::cmp::min(output.len(), result.len()) {
-            output[i] = result[i];
-        }
-
-        // Return Ok for the test
-        return Ok(());
-    }
-
     let ast = ptx_parser::parse_module_checked(ptx_text).unwrap();
     let llvm_ir = pass::to_llvm_module(ast).unwrap();
     let name = CString::new(name)?;
@@ -823,13 +461,30 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     }
 
     // Try various SPIR-V generation options
+    // Basic sed command to fix private address space
     let shell_cmd = format!(
         "llvm-dis-18 {} -o /tmp/temp.ll && sed -i 's/addrspace(5)/addrspace(0)/g' /tmp/temp.ll && llvm-as-18 /tmp/temp.ll -o /tmp/temp.bc && llvm-spirv-18 /tmp/temp.bc -o {}", 
         llvm_ir_file.replace("\"", "\\\""), 
         spirv_file.replace("\"", "\\\"")
     );
 
+    // Improved sed command that also fixes global variables with missing address spaces
+    let fixed_globals_cmd = format!(
+        "llvm-dis-18 {} -o /tmp/temp.ll && sed -i -E 's/@_([0-9]+) = internal global/@_\\1 = internal addrspace(0) global/g' /tmp/temp.ll && sed -i 's/addrspace(5)/addrspace(0)/g' /tmp/temp.ll && llvm-as-18 /tmp/temp.ll -o /tmp/temp.bc && llvm-spirv-18 /tmp/temp.bc -o {}", 
+        llvm_ir_file.replace("\"", "\\\""), 
+        spirv_file.replace("\"", "\\\"")
+    );
+
+    // Use our custom fix script that handles global address space issues properly
+    let fix_script_cmd = format!(
+        "/tmp/fix_spirv.sh {} {}",
+        llvm_ir_file.replace("\"", "\\\""),
+        spirv_file.replace("\"", "\\\"")
+    );
+
     let conversion_methods = [
+        // Method 1: Our custom fix script - most reliable
+        vec!["sh", "-c", &fix_script_cmd],
         vec![
             "llvm-spirv-18",
             &llvm_ir_file,
@@ -837,7 +492,9 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             &spirv_file,
             "--spirv-ext=+all",
         ],
-        // Method 7: Last resort - manual patching with shell command
+        // Method 2: Improved version with address space fix for globals
+        vec!["sh", "-c", &fixed_globals_cmd],
+        // Method 3: Original shell command as fallback
         vec!["sh", "-c", &shell_cmd],
     ];
 
