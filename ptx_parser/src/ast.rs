@@ -1640,7 +1640,6 @@ impl CvtDetails {
             }
             (ScalarKind::Unsigned, ScalarKind::Signed) => CvtMode::SaturateSignedToUnsigned,
             (_, _) => {
-                errors.push(PtxError::SyntaxError);
                 CvtMode::Bitcast
             }
         };
