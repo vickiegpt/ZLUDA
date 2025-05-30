@@ -1,0 +1,16 @@
+[package]
+name = "tenstorrent_comgr_sys"
+version = "0.1.0"
+edition = "2024"
+description = "Rust bindings for Tenstorrent Compiler for Graphics (COMGR) that follow AMD's COMGR API structure"
+license = "MIT"
+authors = ["ZLUDA Team"]
+readme = "README.md"
+
+[dependencies]
+tempfile = "3.4.0"
+lazy_static = "1.4.0"
+
+[lib]
+name = "tenstorrent_comgr_sys"
+path = "src/lib.rs"

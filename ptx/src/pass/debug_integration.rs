@@ -65,7 +65,12 @@ impl DebugAwarePtxContext {
             );
 
             // Set debug location for current instruction
-            llvm_zluda::LLVMZludaSetCurrentDebugLocation(builder, debug_loc);
+            // Convert metadata to value for setting debug location
+            let debug_value = LLVMMetadataAsValue(
+                dwarf_builder.context,
+                debug_loc
+            );
+            LLVMSetCurrentDebugLocation(builder, debug_value);
 
             // Create a mapping entry for later state recovery
             let mapping = DwarfMappingEntry {
@@ -140,8 +145,8 @@ impl DebugAwarePtxContext {
                 LLVMDIBuilderCreateExpression(dwarf_builder.get_builder(), std::ptr::null_mut(), 0);
 
             // Insert variable declaration
-            llvm_zluda::LLVMZludaInsertDeclareAtEnd(
-                builder,
+            LLVMDIBuilderInsertDeclareAtEnd(
+                dwarf_builder.get_builder(),
                 storage,
                 var_debug_info,
                 empty_expr,
