@@ -2,13 +2,13 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #include <llvm-c/Core.h>
 #include <llvm-c/DebugInfo.h>
+#include <llvm-c/Target.h>
 #include <llvm/ADT/PointerUnion.h>
 #include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Type.h>
-
 
 #pragma GCC diagnostic pop
 
@@ -211,6 +211,10 @@ LLVMZludaInsertDeclareAtEnd(LLVMBuilderRef Builder, LLVMValueRef Storage,
   Call->setDebugLoc(DebugLoc(unwrap<DILocation>(DL)));
 
   return wrap(Call);
+}
+unsigned long long LLVMZludaSizeOfTypeInBits(LLVMTargetDataRef TD,
+                                             LLVMTypeRef Ty) {
+  return LLVMSizeOfTypeInBits(TD, Ty);
 }
 
 LLVM_C_EXTERN_C_END

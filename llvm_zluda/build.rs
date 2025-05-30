@@ -45,6 +45,7 @@ fn main() {
             .unwrap();
     println!("cargo:rustc-link-arg={ldflags}");
     println!("cargo:rustc-link-search=native={libdir}");
+    println!("cargo:rustc-link-search=native={libdir}/../../../../../../../ext/llvm-project/build/lib");
     for lib in system_libs.split_ascii_whitespace() {
         println!("cargo:rustc-link-arg={lib}");
     }
@@ -128,4 +129,5 @@ fn link_llvm_components(components: String) {
         };
         println!("cargo:rustc-link-lib={component}");
     }
+    println!("cargo:rustc-link-lib=LLVMTarget");
 }

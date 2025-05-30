@@ -128,6 +128,9 @@ ze_runner_result_t run_spirv_kernel(
     
     DEBUG_PRINT("Command list created successfully");
     
+    // 设置编译标志，启用原子操作支持
+    const char* build_flags = "-ze-intel-enable-atomics";
+    
     // 创建模块
     ze_module_desc_t module_desc = {
         .stype = ZE_STRUCTURE_TYPE_MODULE_DESC,
@@ -135,7 +138,7 @@ ze_runner_result_t run_spirv_kernel(
         .format = ZE_MODULE_FORMAT_IL_SPIRV,
         .inputSize = spirv_size,
         .pInputModule = spirv_data,
-        .pBuildFlags = NULL,
+        .pBuildFlags = build_flags,
         .pConstants = NULL
     };
     
@@ -192,6 +195,11 @@ ze_runner_result_t run_spirv_kernel(
     
     if (kern_result != ZE_RESULT_SUCCESS) {
         DEBUG_PRINT("Failed to create kernel: %d", kern_result);
+        zeModuleDestroy(module);
+        zeCommandListDestroy(command_list);
+        zeContextDestroy(context);
+        free(devices);
+        free(drivers);
         return ZE_RUNNER_ERROR_KERNEL_EXECUTION;
     }
     

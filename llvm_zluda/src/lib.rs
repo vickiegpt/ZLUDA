@@ -93,4 +93,6 @@ extern "C" {
         DL: LLVMMetadataRef,
         InsertAtEnd: LLVMBasicBlockRef,
     ) -> LLVMValueRef;
+
+    pub fn LLVMZludaSizeOfTypeInBits(TD: LLVMContextRef, Ty: LLVMTypeRef) -> u64;
 }

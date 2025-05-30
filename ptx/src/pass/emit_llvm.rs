@@ -33,9 +33,15 @@ use std::{i8, ptr};
 use super::*;
 use llvm_zluda::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_zluda::bit_writer::LLVMWriteBitcodeToMemoryBuffer;
-use llvm_zluda::{core::*, *};
-use llvm_zluda::{prelude::*, LLVMZludaBuildAtomicRMW};
-use llvm_zluda::{LLVMCallConv, LLVMZludaBuildAlloca};
+use llvm_zluda::prelude::*;
+use llvm_zluda::target::{LLVMGetModuleDataLayout, LLVMSizeOfTypeInBits};
+use llvm_zluda::{core::*, LLVMAtomicOrdering, LLVMIntPredicate, LLVMRealPredicate};
+use llvm_zluda::{
+    LLVMAttributeFunctionIndex, LLVMCallConv, LLVMZludaAtomicRMWBinOp, LLVMZludaBuildAlloca,
+    LLVMZludaBuildAtomicCmpXchg, LLVMZludaBuildAtomicRMW, LLVMZludaBuildFence,
+    LLVMZludaFastMathAllowReciprocal, LLVMZludaFastMathApproxFunc, LLVMZludaFastMathNone,
+    LLVMZludaSetFastMathFlags,
+};
 
 const LLVM_UNNAMED: &CStr = c"";
 // https://llvm.org/docs/AMDGPUUsage.html#address-spaces
@@ -434,7 +440,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         &mut self,
         type_: &ast::Type,
         array_init: &[u8],
-        global: *mut llvm_zluda::LLVMValue,
+        global: LLVMValueRef,
     ) -> Result<(), TranslateError> {
         match type_ {
             ast::Type::Array(None, scalar, dimensions) => {
@@ -1357,7 +1363,7 @@ impl<'a> MethodEmitContext<'a> {
         if repack.is_extract {
             let src = self.resolver.value(repack.packed)?;
             for (index, dst) in repack.unpacked.iter().enumerate() {
-                let index: *mut LLVMValue = unsafe { LLVMConstInt(i8_type, index as _, 0) };
+                let index: LLVMValueRef = unsafe { LLVMConstInt(i8_type, index as _, 0) };
                 self.resolver.with_result(*dst, |dst| unsafe {
                     LLVMBuildExtractElement(self.builder, src, index, dst)
                 });
@@ -1723,8 +1729,9 @@ impl<'a> MethodEmitContext<'a> {
 
             // Check if bitcast is valid between these types
             // Bitcast requires same size types
-            let src_size = unsafe { LLVMSizeOfTypeInBits(self.context, src_type) };
-            let dst_size = unsafe { LLVMSizeOfTypeInBits(self.context, dst_type) };
+            let data_layout = unsafe { LLVMGetModuleDataLayout(self.module) };
+            let src_size = unsafe { LLVMSizeOfTypeInBits(data_layout, src_type) };
+            let dst_size = unsafe { LLVMSizeOfTypeInBits(data_layout, dst_type) };
 
             if src_size == dst_size {
                 // Same size, we can use bitcast
