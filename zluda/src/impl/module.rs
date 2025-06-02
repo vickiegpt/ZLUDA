@@ -7,6 +7,8 @@ use hip_runtime_sys::*;
 use std::{ffi::CStr, ptr};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
+#[cfg(feature = "tenstorrent")]
+use tt_runtime_sys;
 #[cfg(feature = "amd")]
 pub(crate) struct Module {
     base: hipModule_t,
@@ -19,6 +21,14 @@ pub(crate) struct Module {
     module: ze_module_handle_t,
     functions: Vec<(String, ze_kernel_handle_t)>,
 }
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) struct Module {
+    device_id: i32,
+    program: Option<tt_runtime_sys::Program>,
+    kernels: Vec<(String, tt_runtime_sys::Kernel)>,
+}
+
 unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 #[cfg(feature = "amd")]
@@ -53,6 +63,23 @@ impl ZludaObject for Module {
         if result != ze_result_t::ZE_RESULT_SUCCESS {
             return ze_to_cuda_result(result);
         }
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "tenstorrent")]
+impl ZludaObject for Module {
+    const COOKIE: usize = 0xe9138bd040487d4a;
+
+    type CudaHandle = CUmodule;
+
+    fn drop_checked(&mut self) -> CUresult {
+        // Clean up kernels (they will be dropped automatically)
+        self.kernels.clear();
+        
+        // Clean up program (it will be dropped automatically)
+        self.program = None;
 
         Ok(())
     }

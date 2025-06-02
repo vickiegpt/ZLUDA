@@ -2,7 +2,7 @@ use super::context;
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
-use std::{mem, ptr};
+use std::{mem, ptr, ffi::c_void};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
 
@@ -1075,7 +1075,7 @@ pub(crate) fn primary_context_release(ze_dev: ze_device_handle_t) -> Result<(), 
                 // Clean up memory allocations
                 let allocations: Vec<_> = mutable_ctx._allocations.iter().copied().collect();
                 for ptr in allocations {
-                    let _ = unsafe { zeMemFree(ctx.context, ptr) };
+                    let _ = unsafe { zeMemFree(ctx.context, ptr as *mut c_void) };
                 }
                 mutable_ctx._allocations.clear();
             }

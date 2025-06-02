@@ -8,6 +8,8 @@ use std::os::raw::c_void;
 use std::{cell::RefCell, ptr, sync::Mutex};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
+#[cfg(feature = "tenstorrent")]
+use tt_runtime_sys::*;
 use std::ffi::c_uint;
 // 添加Result转换特性，用于ze_result_t到CUerror的转换
 #[cfg(feature = "intel")]
@@ -27,11 +29,29 @@ impl ResultExt for ze_result_t {
     }
 }
 
+// 添加Result转换特性，用于tt_runtime_sys Result<T, String>到CUerror的转换
+#[cfg(feature = "tenstorrent")]
+trait TTResultExt {
+    fn to_cuda_result<T>(self, value: T) -> Result<T, CUerror>;
+}
+
+#[cfg(feature = "tenstorrent")]
+impl<T> TTResultExt for Result<T, String> {
+    fn to_cuda_result<U>(self, value: U) -> Result<U, CUerror> {
+        match self {
+            Ok(_) => Ok(value),
+            Err(_) => Err(CUerror::UNKNOWN),
+        }
+    }
+}
+
 thread_local! {
     #[cfg(feature = "amd")]
     pub(crate) static CONTEXT_STACK: RefCell<Vec<(CUcontext, hipDevice_t)>> = RefCell::new(Vec::new());
     #[cfg(feature = "intel")]
     pub(crate) static CONTEXT_STACK: RefCell<Vec<(CUcontext, ze_device_handle_t)>> = RefCell::new(Vec::new());
+    #[cfg(feature = "tenstorrent")]
+    pub(crate) static CONTEXT_STACK: RefCell<Vec<(CUcontext, i32)>> = RefCell::new(Vec::new());
 }
 #[cfg(feature = "amd")]
 pub(crate) struct Context {
@@ -250,15 +270,13 @@ impl Clone for Context {
         }
     }
 }
-unsafe impl Send for Context {}
-unsafe impl Sync for Context {}
 #[cfg(feature = "intel")]
 pub(crate) struct OwnedByContext {
     pub(crate) ref_count: usize,
     pub(crate) _command_queues: FxHashSet<ze_command_queue_handle_t>,
     pub(crate) _command_lists: FxHashSet<ze_command_list_handle_t>,
     pub(crate) _modules: FxHashSet<ze_module_handle_t>,
-    pub(crate) _allocations: FxHashSet<*mut c_void>,
+    pub(crate) _allocations: FxHashSet<usize>,
 }
 
 #[cfg(feature = "intel")]
@@ -386,13 +404,13 @@ impl Context {
 
     pub(crate) fn add_allocation(&self, ptr: *mut c_void) {
         if let Ok(mut mutable) = self.mutable.lock() {
-            mutable._allocations.insert(ptr);
+            mutable._allocations.insert(ptr as usize);
         }
     }
 
     pub(crate) fn remove_allocation(&self, ptr: *mut c_void) -> bool {
         if let Ok(mut mutable) = self.mutable.lock() {
-            mutable._allocations.remove(&ptr)
+            mutable._allocations.remove(&(ptr as usize))
         } else {
             false
         }
@@ -417,8 +435,8 @@ impl Context {
             }
 
             // Free memory allocations
-            for allocation in &mutable._allocations {
-                unsafe { zeMemFree(self.context, *allocation) }.to_cuda_result(())?;
+            for &allocation in &mutable._allocations {
+                unsafe { zeMemFree(self.context, allocation as *mut c_void) }.to_cuda_result(())?;
             }
         }
 
@@ -809,5 +827,240 @@ pub(crate) fn get_primary_ze(
     device: ze_device_handle_t,
 ) -> Result<(&'static Context, CUcontext), CUerror> {
     let dev = driver::device_ze(device)?;
+    Ok(dev.primary_context())
+}
+
+// Tenstorrent implementation
+#[cfg(feature = "tenstorrent")]
+pub(crate) struct Context {
+    pub(crate) device_id: i32,
+    pub(crate) device: Option<tt_runtime_sys::Device>,
+    pub(crate) mutable: Mutex<OwnedByContext>,
+}
+
+#[cfg(feature = "tenstorrent")]
+unsafe impl Send for Context {}
+
+#[cfg(feature = "tenstorrent")]
+unsafe impl Sync for Context {}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) struct OwnedByContext {
+    pub(crate) ref_count: usize,
+    pub(crate) _memory: FxHashSet<usize>,    // Device memory pointers
+    pub(crate) _streams: FxHashSet<usize>,   // Command queues
+    pub(crate) _modules: FxHashSet<usize>,   // Programs
+}
+
+#[cfg(feature = "tenstorrent")]
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        let guard = self.mutable.lock().unwrap();
+        Self {
+            device_id: self.device_id,
+            device: None,
+            mutable: Mutex::new(OwnedByContext {
+                ref_count: guard.ref_count,
+                _memory: guard._memory.clone(),
+                _streams: guard._streams.clone(),
+                _modules: guard._modules.clone(),
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "tenstorrent")]
+impl Context {
+    pub(crate) fn new(device_id: i32) -> Self {
+        Self {
+            device_id,
+            device: None,
+            mutable: Mutex::new(OwnedByContext {
+                ref_count: 0,
+                _memory: FxHashSet::default(),
+                _streams: FxHashSet::default(),
+                _modules: FxHashSet::default(),
+            }),
+        }
+    }
+
+    pub(crate) fn initialize(&mut self) -> Result<(), CUerror> {
+        // Create a new Tenstorrent device if it doesn't exist
+        if self.device.is_none() {
+            let tt_device = tt_runtime_sys::Device::new(self.device_id as u32)
+                .map_err(|_| CUerror::INVALID_DEVICE)?;
+            self.device = Some(tt_device);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn get_device_id(&self) -> i32 {
+        self.device_id
+    }
+
+    pub(crate) fn get_device(&self) -> Option<&Device> {
+        self.device.as_ref()
+    }
+
+    pub(crate) fn increment_ref_count(&self) {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable.ref_count += 1;
+        }
+    }
+
+    pub(crate) fn decrement_ref_count(&self) -> usize {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            if mutable.ref_count > 0 {
+                mutable.ref_count -= 1;
+            }
+            mutable.ref_count
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn add_program(&self, program_id: usize) {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable._modules.insert(program_id);
+        }
+    }
+
+    pub(crate) fn remove_program(&self, program_id: usize) -> bool {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable._modules.remove(&program_id)
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn add_buffer(&self, buffer_id: usize) {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable._memory.insert(buffer_id);
+        }
+    }
+
+    pub(crate) fn remove_buffer(&self, buffer_id: usize) -> bool {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable._memory.remove(&buffer_id)
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn add_kernel(&self, kernel_id: usize) {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable._modules.insert(kernel_id);
+        }
+    }
+
+    pub(crate) fn remove_kernel(&self, kernel_id: usize) -> bool {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable._modules.remove(&kernel_id)
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn destroy(&self) -> Result<(), CUerror> {
+        // The device is automatically cleaned up when dropped
+        Ok(())
+    }
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) unsafe fn get_limit(_pvalue: *mut usize, _limit: c_uint) -> Result<(), String> {
+    // Tenstorrent doesn't have a direct equivalent to CUDA limits
+    // Return a default implementation
+    if !_pvalue.is_null() {
+        unsafe { *_pvalue = 0 };
+    }
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn set_limit(_limit: c_uint, _value: usize) -> Result<(), String> {
+    // Tenstorrent doesn't have a direct equivalent to CUDA limits
+    // This is a no-op
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn synchronize() -> Result<(), String> {
+    // Implement device synchronization if available in Tenstorrent API
+    // For now, this is a no-op as most operations in tt_runtime_sys are already synchronous
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn get_primary(device_id: i32) -> Result<(&'static Context, CUcontext), CUerror> {
+    let dev = driver::device(device_id)?;
+    Ok(dev.primary_context())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
+    let new_device_id = if raw_ctx.0 == ptr::null_mut() {
+        CONTEXT_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if let Some((_, old_device_id)) = stack.pop() {
+                if let Some((_, new_device_id)) = stack.last() {
+                    if old_device_id != *new_device_id {
+                        return Some(*new_device_id);
+                    }
+                }
+            }
+            None
+        })
+    } else {
+        let ctx: &Context = FromCuda::from_cuda(&raw_ctx).unwrap();
+        let device_id = ctx.device_id;
+        CONTEXT_STACK.with(move |stack| {
+            let mut stack = stack.borrow_mut();
+            let last_device_id = stack.last().map(|(_, dev_id)| *dev_id);
+            stack.push((raw_ctx, device_id));
+            match last_device_id {
+                None => Some(device_id),
+                Some(last_device_id) if last_device_id != device_id => Some(device_id),
+                _ => None,
+            }
+        })
+    };
+
+    // Tenstorrent doesn't require switching the active device
+    // as each operation takes a device reference
+    
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn push(ctx: CUcontext, device_id: i32) {
+    CONTEXT_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        stack.push((ctx, device_id));
+    });
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn get_device_properties(device_id: i32) -> Result<String, CUerror> {
+    // Get device
+    let tt_device = tt_runtime_sys::Device::new(device_id as u32)
+        .map_err(|_| CUerror::INVALID_DEVICE)?;
+    
+    // Get device name or other properties
+    let device_name = tt_device.get_name()
+        .map_err(|_| CUerror::UNKNOWN)?;
+    
+    Ok(device_name)
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn get_current_tt() -> Result<&'static Context, CUerror> {
+    let current = get_current().ok_or(CUerror::INVALID_CONTEXT)?;
+    FromCuda::from_cuda(&current)
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn get_primary_tt(device_id: i32) -> Result<(&'static Context, CUcontext), CUerror> {
+    let dev = driver::device_tt(device_id)?;
     Ok(dev.primary_context())
 }

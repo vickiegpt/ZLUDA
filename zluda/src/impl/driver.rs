@@ -1,12 +1,11 @@
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
+use std::{ffi::CString, sync::OnceLock};
+#[cfg(feature = "tenstorrent")]
+use tt_runtime_sys::*;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
-use std::{
-    ffi::CString,
-    sync::OnceLock,
-};
 
 use std::ffi::CStr;
 
@@ -35,6 +34,21 @@ impl ResultExt for ze_result_t {
     }
 }
 
+// Define trait for converting tt_runtime_sys results to CUresult
+#[cfg(feature = "tenstorrent")]
+trait TTResultExt {
+    fn to_cuda_result<T>(self, value: T) -> Result<T, CUerror>;
+}
+
+#[cfg(feature = "tenstorrent")]
+impl TTResultExt for Result<(), String> {
+    fn to_cuda_result<T>(self, value: T) -> Result<T, CUerror> {
+        match self {
+            Ok(_) => Ok(value),
+            Err(_) => Err(CUerror::UNKNOWN),
+        }
+    }
+}
 
 pub(crate) struct GlobalState {
     pub devices: Vec<Device>,
@@ -50,7 +64,9 @@ impl Clone for Device {
     fn clone(&self) -> Self {
         Self {
             _comgr_isa: self._comgr_isa.clone(),
-            primary_context: LiveCheck::new(unsafe { self.primary_context.data.assume_init_ref().clone() }),
+            primary_context: LiveCheck::new(unsafe {
+                self.primary_context.data.assume_init_ref().clone()
+            }),
         }
     }
 }
@@ -104,98 +120,156 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
 #[cfg(feature = "intel")]
 pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
     static GLOBAL_STATE: OnceLock<Result<GlobalState, CUerror>> = OnceLock::new();
-    
+
     GLOBAL_STATE
         .get_or_init(|| {
             // Initialize Level Zero
-            unsafe { zeInit(0) }
-                .to_cuda_result(())?;
-            
+            unsafe { zeInit(0) }.to_cuda_result(())?;
+
             // Get driver count
             let mut driver_count = 0;
-            unsafe { 
-                zeDriverGet(&mut driver_count, std::ptr::null_mut())
-                    .to_cuda_result(())?
-            };
-            
+            unsafe { zeDriverGet(&mut driver_count, std::ptr::null_mut()).to_cuda_result(())? };
+
             if driver_count == 0 {
                 return Err(CUerror::NO_DEVICE);
             }
-            
+
             // Get drivers
             let mut drivers = vec![std::ptr::null_mut(); driver_count as usize];
-            unsafe {
-                zeDriverGet(&mut driver_count, *drivers.as_mut_ptr())
-                    .to_cuda_result(())?
-            };
-            
+            unsafe { zeDriverGet(&mut driver_count, *drivers.as_mut_ptr()).to_cuda_result(())? };
+
             // Get device count for the first driver
             let mut device_count = 0;
             unsafe {
                 zeDeviceGet(*drivers[0], &mut device_count, std::ptr::null_mut())
                     .to_cuda_result(())?
             };
-            
+
             let mut devices_vec = Vec::new();
-            
+
             for i in 0..device_count as i32 {
                 let mut devices = vec![std::ptr::null_mut(); device_count as usize];
-                
+
                 // Get the devices
                 unsafe {
                     zeDeviceGet(*drivers[0], &mut device_count, *devices.as_mut_ptr())
                         .to_cuda_result(())?;
                 }
-                
+
                 let device = if i < devices.len() as i32 {
                     ze_device_handle_t(devices[i as usize] as *mut _)
                 } else {
                     return Err(CUerror::INVALID_DEVICE);
                 };
-                
+
                 // Get device properties
                 let mut props: ze_device_properties_t = unsafe { std::mem::zeroed() };
                 props.stype = ze_structure_type_t::ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
-                
+
                 unsafe {
-                    zeDeviceGetProperties(device, &mut props)
-                        .to_cuda_result(())?;
+                    zeDeviceGetProperties(device, &mut props).to_cuda_result(())?;
                 }
-                
+
                 // Create a string from device name - ensure we only include valid characters
-                let name_bytes = props.name.iter()
+                let name_bytes = props
+                    .name
+                    .iter()
                     .take_while(|&&c| c != 0)
                     .map(|&c| c as u8)
                     .collect::<Vec<_>>();
-                
-                let comgr_isa = CString::new(name_bytes)
-                    .map_err(|_| CUerror::UNKNOWN)?;
-                
+
+                let comgr_isa = CString::new(name_bytes).map_err(|_| CUerror::UNKNOWN)?;
+
                 // Create context
                 let mut ctx = context::Context::new(device);
-                
+
                 // Initialize the context
                 ctx.initialize()?;
-                
+
                 // Create the device and store it in our results
                 let device_box = Box::new(Device {
                     _comgr_isa: comgr_isa,
                     primary_context: LiveCheck::new(ctx),
                 });
-                
+
                 // 使用克隆，这样原始值不会被移动
                 let device_box_clone = Box::new(*device_box.clone());
-                
+
                 // 存储指针到设备映射
                 DEVICES_ZE.with(|map| {
                     let mut map = map.borrow_mut();
-                    let device_ptr = unsafe { NonNull::new_unchecked(Box::into_raw(device_box_clone)) };
+                    let device_ptr =
+                        unsafe { NonNull::new_unchecked(Box::into_raw(device_box_clone)) };
                     map.insert(device, device_ptr);
                 });
-                
+
                 devices_vec.push(*device_box);
             }
-            
+
+            Ok(GlobalState {
+                devices: devices_vec,
+            })
+        })
+        .as_ref()
+        .map_err(|e| *e)
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
+    static GLOBAL_STATE: OnceLock<Result<GlobalState, CUerror>> = OnceLock::new();
+
+    GLOBAL_STATE
+        .get_or_init(|| {
+            // Get device count using tt_runtime_sys
+            let device_count = match get_device_count() {
+                Ok(count) => count,
+                Err(_) => return Err(CUerror::NO_DEVICE),
+            };
+
+            if device_count == 0 {
+                return Err(CUerror::NO_DEVICE);
+            }
+
+            let mut devices_vec = Vec::new();
+
+            for i in 0..device_count as i32 {
+                // Create device
+                let tt_device = match tt_runtime_sys::Device::new(i as u32) {
+                    Ok(dev) => dev,
+                    Err(_) => return Err(CUerror::INVALID_DEVICE),
+                };
+
+                // Get device name
+                let device_name = match tt_device.get_name() {
+                    Ok(name) => name,
+                    Err(_) => return Err(CUerror::UNKNOWN),
+                };
+
+                let comgr_isa = CString::new(device_name).map_err(|_| CUerror::UNKNOWN)?;
+
+                // Create context
+                let ctx = context::Context::new(i);
+
+                // Create the device object for our GlobalState
+                let device = Device {
+                    _comgr_isa: comgr_isa,
+                    primary_context: LiveCheck::new(ctx),
+                };
+
+                // Store device in TT_DEVICES map
+                let device_box = Box::new(device.clone());
+                let device_box_clone = Box::new(*device_box.clone());
+
+                TT_DEVICES.with(|map| {
+                    let mut map = map.borrow_mut();
+                    let device_ptr =
+                        unsafe { NonNull::new_unchecked(Box::into_raw(device_box_clone)) };
+                    map.insert(i, device_ptr);
+                });
+
+                devices_vec.push(*device_box);
+            }
+
             Ok(GlobalState {
                 devices: devices_vec,
             })
@@ -213,14 +287,25 @@ pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
 
 #[cfg(feature = "intel")]
 pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
-    unsafe { 
+    unsafe {
         // Initialize Level Zero
         zeInit(0).to_cuda_result(())?;
-        
+
         // Ignore CUDA flags as they don't apply to Level Zero
         let _ = flags;
     }
-    
+
+    global_state()?;
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
+    // Tenstorrent initialization
+    // The tt_runtime_sys doesn't require explicit initialization like CUDA/HIP
+    // We just ignore the flags as they don't apply to Tenstorrent
+    let _ = flags;
+
     global_state()?;
     Ok(())
 }
@@ -238,6 +323,13 @@ pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
     Ok(())
 }
 
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
+    // Return the CUDA version same as other implementations
+    *version = cuda_types::cuda::CUDA_VERSION as i32;
+    Ok(())
+}
+
 #[cfg(feature = "intel")]
 pub(crate) fn device_ze(dev: ze_device_handle_t) -> Result<&'static Device, CUerror> {
     DEVICES_ZE.with(|map| {
@@ -249,7 +341,23 @@ pub(crate) fn device_ze(dev: ze_device_handle_t) -> Result<&'static Device, CUer
     })
 }
 
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn device_tt(dev_id: i32) -> Result<&'static Device, CUerror> {
+    TT_DEVICES.with(|map| {
+        let map_ref = map.borrow();
+        map_ref
+            .get(&dev_id)
+            .ok_or(CUerror::INVALID_DEVICE)
+            .map(|dev_ptr| unsafe { dev_ptr.as_ref() })
+    })
+}
+
 #[cfg(feature = "intel")]
 thread_local! {
     static DEVICES_ZE: RefCell<HashMap<ze_device_handle_t, NonNull<Device>>> = RefCell::new(HashMap::new());
+}
+
+#[cfg(feature = "tenstorrent")]
+thread_local! {
+    static TT_DEVICES: RefCell<HashMap<i32, NonNull<Device>>> = RefCell::new(HashMap::new());
 }

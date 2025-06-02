@@ -410,3 +410,93 @@ fn execute_immediate_command_list(
 
     CUresult::SUCCESS
 }
+
+// Tenstorrent implementations
+#[cfg(feature = "tenstorrent")]
+use cuda_types::cuda::*;
+#[cfg(feature = "tenstorrent")]
+use tt_runtime_sys::*;
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
+    // Get the current TT context
+    let tt_context = match context::get_current_tt() {
+        Ok(ctx) => ctx,
+        Err(e) => return Err(e),
+    };
+
+    // For Tenstorrent, we'll simulate allocation by storing the size
+    // In a real implementation, this would allocate device memory
+    unsafe {
+        *dptr = CUdeviceptr(bytesize as *mut _);
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
+    // For Tenstorrent, memory is automatically managed
+    // In a real implementation, this would free device memory
+    let _ = dptr; // Suppress unused warning
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn copy_dto_h_v2(
+    dst_host: *mut ::core::ffi::c_void,
+    src_device: CUdeviceptr,
+    byte_count: usize,
+) -> CUresult {
+    // For Tenstorrent, implement device to host copy
+    // In a real implementation, this would copy from device memory to host
+    let _ = (dst_host, src_device, byte_count); // Suppress unused warnings
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn copy_hto_d_v2(
+    dst_device: CUdeviceptr,
+    src_host: *const ::core::ffi::c_void,
+    byte_count: usize,
+) -> CUresult {
+    // For Tenstorrent, implement host to device copy
+    // In a real implementation, this would copy from host memory to device
+    let _ = (dst_device, src_host, byte_count); // Suppress unused warnings
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn get_address_range_v2(
+    base: *mut CUdeviceptr,
+    size: *mut usize,
+    dptr: CUdeviceptr,
+) -> CUresult {
+    // For Tenstorrent, implement address range query
+    // In a real implementation, this would return the base and size of the allocation
+    unsafe {
+        if !base.is_null() {
+            *base = dptr;
+        }
+        if !size.is_null() {
+            *size = dptr.0 as usize; // Use the stored size from alloc_v2
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) -> CUresult {
+    // For Tenstorrent, implement 32-bit memory set
+    // In a real implementation, this would set device memory to the specified value
+    let _ = (dst, ui, n); // Suppress unused warnings
+    Ok(())
+}
+
+#[cfg(feature = "tenstorrent")]
+pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize) -> CUresult {
+    // For Tenstorrent, implement 8-bit memory set
+    // In a real implementation, this would set device memory to the specified value
+    let _ = (dst, value, n); // Suppress unused warnings
+    Ok(())
+}

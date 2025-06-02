@@ -4,7 +4,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
-use std::ffi::{c_void, CString, c_char, c_int, c_uchar, c_uint};
+use std::ffi::{c_char, c_int, c_uchar, c_uint, c_void, CString};
 use std::ptr;
 
 #[repr(C)]
@@ -201,11 +201,19 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_WriteToBuffer(buffer: *mut tt_Buffer, data: *const u32, size: usize) -> tt_Result;
+    pub fn tt_metal_WriteToBuffer(
+        buffer: *mut tt_Buffer,
+        data: *const u32,
+        size: usize,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_ReadFromBuffer(buffer: *mut tt_Buffer, data: *mut u32, size: usize) -> tt_Result;
+    pub fn tt_metal_ReadFromBuffer(
+        buffer: *mut tt_Buffer,
+        data: *mut u32,
+        size: usize,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
@@ -230,15 +238,23 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_BeginTraceCapture(device: *mut tt_Device, trace_name: *const c_char) -> tt_Result;
+    pub fn tt_metal_BeginTraceCapture(
+        device: *mut tt_Device,
+        trace_name: *const c_char,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_EndTraceCapture(device: *mut tt_Device, trace: *mut *mut tt_Trace) -> tt_Result;
+    pub fn tt_metal_EndTraceCapture(device: *mut tt_Device, trace: *mut *mut tt_Trace)
+        -> tt_Result;
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_LoadTrace(device: *mut tt_Device, trace_file: *const c_char, trace: *mut *mut tt_Trace) -> tt_Result;
+    pub fn tt_metal_LoadTrace(
+        device: *mut tt_Device,
+        trace_file: *const c_char,
+        trace: *mut *mut tt_Trace,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
@@ -246,7 +262,10 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_LightMetalBeginCapture(device: *mut tt_Device, capture_name: *const c_char) -> tt_Result;
+    pub fn tt_metal_LightMetalBeginCapture(
+        device: *mut tt_Device,
+        capture_name: *const c_char,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
@@ -254,7 +273,10 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_DumpDeviceProfileResults(device: *mut tt_Device, output_file: *const c_char) -> tt_Result;
+    pub fn tt_metal_DumpDeviceProfileResults(
+        device: *mut tt_Device,
+        output_file: *const c_char,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
@@ -270,11 +292,21 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_WriteToBufferOffset(buffer: *mut tt_Buffer, data: *const u32, offset: u64, size: usize) -> tt_Result;
+    pub fn tt_metal_WriteToBufferOffset(
+        buffer: *mut tt_Buffer,
+        data: *const u32,
+        offset: u64,
+        size: usize,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_ReadFromBufferOffset(buffer: *mut tt_Buffer, data: *mut u32, offset: u64, size: usize) -> tt_Result;
+    pub fn tt_metal_ReadFromBufferOffset(
+        buffer: *mut tt_Buffer,
+        data: *mut u32,
+        offset: u64,
+        size: usize,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
@@ -318,11 +350,17 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_EnqueueRecordEvent(queue: *mut tt_CommandQueue, event: *mut *mut tt_Event) -> tt_Result;
+    pub fn tt_metal_EnqueueRecordEvent(
+        queue: *mut tt_CommandQueue,
+        event: *mut *mut tt_Event,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
-    pub fn tt_metal_EnqueueWaitForEvent(queue: *mut tt_CommandQueue, event: *mut tt_Event) -> tt_Result;
+    pub fn tt_metal_EnqueueWaitForEvent(
+        queue: *mut tt_CommandQueue,
+        event: *mut tt_Event,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
@@ -361,6 +399,10 @@ unsafe extern "C" {
     pub fn tt_metal_QueryDevices(device_count: *mut u32, device_ids: *mut u32) -> tt_Result;
 }
 
+unsafe extern "C" {
+    pub fn tt_metal_GetDeviceCount() -> c_int;
+}
+
 unsafe impl Send for tt_Device {}
 unsafe impl Sync for tt_Device {}
 unsafe impl Send for tt_Program {}
@@ -377,8 +419,6 @@ unsafe impl Send for tt_Event {}
 unsafe impl Sync for tt_Event {}
 unsafe impl Send for tt_Trace {}
 unsafe impl Sync for tt_Trace {}
-
-
 
 pub struct Device {
     handle: *mut tt_Device,
@@ -409,13 +449,18 @@ pub struct Trace {
 }
 
 impl Device {
-    pub fn new(device_id: i32) -> Result<Self, String> {
-        let handle = unsafe { tt_metal_CreateDevice(device_id) };
+    pub fn new(device_id: u32) -> Result<Self, String> {
+        let handle = unsafe { tt_metal_CreateDevice(device_id as c_int) };
         if handle.is_null() {
-            Err("Failed to create device".to_string())
-        } else {
-            Ok(Device { handle })
+            return Err(format!("Failed to create device with id {}", device_id));
         }
+        Ok(Self { handle })
+    }
+
+    pub fn get_name(&self) -> Result<String, String> {
+        // Tenstorrent API doesn't provide a direct method to get device name
+        // Return a generic name based on the handle pointer value
+        Ok(format!("Tenstorrent Device {:p}", self.handle))
     }
 
     pub fn create_program(&self) -> Result<Program, String> {
@@ -432,7 +477,7 @@ impl Device {
             device: self.handle,
             size: size as u32,
             page_size: 1024, // Default page size
-            buffer_type: 0, // tt_BufferType_tt_BufferType_DRAM
+            buffer_type: 0,  // tt_BufferType_tt_BufferType_DRAM
         };
         let handle = unsafe { tt_metal_CreateBuffer(&config) };
         if handle.is_null() {
@@ -577,9 +622,10 @@ impl Program {
         let kernel_name = CString::new(kernel_name).map_err(|e| e.to_string())?;
         let config = tt_DataMovementConfig {
             processor: 0, // tt_DataMovementProcessor_tt_DataMovementProcessor_RISCV_0
-            noc: 0, // tt_NOC_tt_NOC_RISCV_0_default
+            noc: 0,       // tt_NOC_tt_NOC_RISCV_0_default
         };
-        let handle = unsafe { tt_metal_CreateKernel(self.handle, kernel_name.as_ptr(), core, &config) };
+        let handle =
+            unsafe { tt_metal_CreateKernel(self.handle, kernel_name.as_ptr(), core, &config) };
         if handle.is_null() {
             Err("Failed to create kernel".to_string())
         } else {
@@ -587,15 +633,14 @@ impl Program {
         }
     }
 
-    pub fn set_runtime_args(&self, kernel: &Kernel, core: CoreCoord, args: &[u32]) -> Result<(), String> {
+    pub fn set_runtime_args(
+        &self,
+        kernel: &Kernel,
+        core: CoreCoord,
+        args: &[u32],
+    ) -> Result<(), String> {
         unsafe {
-            tt_metal_SetRuntimeArgs(
-                self.handle,
-                kernel.handle,
-                core,
-                args.as_ptr(),
-                args.len(),
-            )
+            tt_metal_SetRuntimeArgs(self.handle, kernel.handle, core, args.as_ptr(), args.len())
         };
         Ok(())
     }
@@ -632,13 +677,8 @@ impl Drop for Program {
 
 impl Buffer {
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
-        let result = unsafe {
-            tt_metal_WriteToBuffer(
-                self.handle,
-                data.as_ptr() as *const u32,
-                data.len(),
-            )
-        };
+        let result =
+            unsafe { tt_metal_WriteToBuffer(self.handle, data.as_ptr() as *const u32, data.len()) };
 
         if result == tt_Result_tt_Result_Success {
             Ok(())
@@ -652,11 +692,7 @@ impl Buffer {
 
     pub fn read(&self, data: &mut [u8]) -> Result<(), String> {
         let result = unsafe {
-            tt_metal_ReadFromBuffer(
-                self.handle,
-                data.as_mut_ptr() as *mut u32,
-                data.len(),
-            )
+            tt_metal_ReadFromBuffer(self.handle, data.as_mut_ptr() as *mut u32, data.len())
         };
 
         if result == tt_Result_tt_Result_Success {
@@ -931,4 +967,13 @@ pub fn query_devices() -> Result<Vec<u32>, String> {
 
 pub fn tile_size(data_format: tt_DataFormat) -> u32 {
     unsafe { tt_metal_TileSize(data_format) }
+}
+
+pub fn get_device_count() -> Result<i32, String> {
+    let count = unsafe { tt_metal_GetDeviceCount() };
+    if count < 0 {
+        Err("Failed to get device count".to_string())
+    } else {
+        Ok(count)
+    }
 }
