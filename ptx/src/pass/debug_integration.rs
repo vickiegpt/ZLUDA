@@ -12,6 +12,7 @@ use llvm_zluda::debuginfo::*;
 use llvm_zluda::prelude::*;
 use std::collections::HashMap;
 use std::ffi::CString;
+use llvm_zluda::*;
 
 /// Debug-enabled PTX compilation context
 pub struct DebugAwarePtxContext {
@@ -97,16 +98,16 @@ impl DebugAwarePtxContext {
         line: u32,
     ) -> Result<(), String> {
         if let Some(ref mut dwarf_builder) = self.dwarf_builder {
-            // Create basic function type for debug info
-            let void_type = dwarf_builder.create_basic_type("void", 0, 0)?;
+            // Create proper function type for debug info (void function with no parameters)
+            let function_type = dwarf_builder.create_function_type(None, &[])?;
 
             let function_debug_info = dwarf_builder.create_function_debug_info(
                 function_name,
                 function_name, // linkage name same as function name
                 line,
-                void_type, // TODO: create proper function type
-                false,     // not local to unit
-                true,      // is definition
+                function_type, // proper function type
+                false,         // not local to unit
+                true,          // is definition
             )?;
 
             self.current_function_debug_info = Some(function_debug_info);
@@ -144,8 +145,10 @@ impl DebugAwarePtxContext {
             let empty_expr =
                 LLVMDIBuilderCreateExpression(dwarf_builder.get_builder(), std::ptr::null_mut(), 0);
 
-            // Insert variable declaration
-            LLVMDIBuilderInsertDeclareAtEnd(
+            // Insert variable declaration using new debug format
+            // Note: Temporarily disabled due to LLVM API changes
+            // TODO: Re-enable when LLVM bindings are updated
+            LLVMZludaDIBuilderInsertDeclareRecordAtEnd(
                 dwarf_builder.get_builder(),
                 storage,
                 var_debug_info,

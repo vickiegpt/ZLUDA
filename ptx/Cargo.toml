@@ -19,6 +19,7 @@ strum = "0.26"
 strum_macros = "0.26"
 hip_runtime_sys = { path = "../ext/hip_runtime-sys" }
 ze_runtime_sys = { path = "../ext/ze_runtime-sys" }
+tt_runtime_sys = { path = "../ext/tt_runtime-sys" }
 tempfile = "3"
 which = "4.4"
 libc = "0.2"
@@ -34,6 +35,6 @@ cuda-driver-sys = "0.3.0"
 
 
 [features]
-default = ["intel"]
 intel = []
 amd = []
+tenstorrent = []

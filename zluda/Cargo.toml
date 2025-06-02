@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 default = ["intel"]
 intel = []
 amd = []
+tenstorrent = []
 
 [dependencies]
 comgr = { path = "../comgr" }
@@ -27,6 +28,8 @@ paste = "1.0"
 rustc-hash = "1.1"
 ze_runtime_sys = { path = "../ext/ze_runtime-sys" }
 hip_runtime_sys = { path = "../ext/hip_runtime-sys" }
+tt_runtime_sys = { path = "../ext/tt_runtime-sys" }
+tt_comgr_sys = { path = "../ext/tt_comgr-sys" }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["heapapi", "std"] }

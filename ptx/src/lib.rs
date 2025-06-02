@@ -1,7 +1,7 @@
 #![feature(str_from_raw_parts)]
 
-pub(crate) mod pass;
 pub mod debug;
+pub(crate) mod pass;
 pub mod state_recovery;
 #[cfg(test)]
 mod test;
@@ -88,7 +88,14 @@ pub fn llvm_to_spirv_alt(llvm_ir: &str) -> Result<Vec<u8>, Box<dyn std::error::E
 
     // Convert LLVM IR to SPIR-V using llvm-spirv
     let output = std::process::Command::new(llvm_path)
-        .args(&[ir_path, "-o", spirv_path])
+        .args(&[
+            ir_path,
+            "-o",
+            spirv_path,
+            "--spirv-ext=+all",
+            "--spirv-target-env=CL2.0",
+            "--strip-debug", // Disable debug information to avoid linking issues
+        ])
         .output()?;
 
     if !output.status.success() {

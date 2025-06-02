@@ -31,8 +31,8 @@ use std::ops::Deref;
 use std::{i8, ptr};
 
 use super::*;
-use crate::pass::debug_integration::{DebugAwarePtxContext, ptx_type_to_dwarf_encoding, ptx_type_size_bits};
 use crate::debug::VariableLocation;
+use crate::pass::debug_integration::DebugAwarePtxContext;
 use llvm_zluda::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_zluda::bit_writer::LLVMWriteBitcodeToMemoryBuffer;
 use llvm_zluda::prelude::*;
@@ -290,7 +290,9 @@ pub(super) fn run<'input>(
     }
 
     // Finalize debug information before module verification
-    unsafe { emit_ctx.debug_context.finalize_debug_info(); }
+    unsafe {
+        emit_ctx.debug_context.finalize_debug_info();
+    }
 
     if let Err(err) = module.verify() {
         panic!("{:?}", err);
@@ -314,7 +316,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         id_defs: &'a GlobalStringIdentResolver2<'input>,
     ) -> Self {
         let mut debug_context = DebugAwarePtxContext::new(true); // Enable debug by default
-        
+
         // Initialize debug information for the module
         unsafe {
             if let Err(e) = debug_context.initialize_debug_info(
@@ -325,7 +327,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                 eprintln!("Warning: Failed to initialize debug info: {}", e);
             }
         }
-        
+
         ModuleEmitContext {
             context: context.get(),
             module: module.get(),
@@ -369,9 +371,14 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                     .map(|v| get_input_argument_type(self.context, &v.v_type, v.state_space)),
             )?;
             fn_ = unsafe { LLVMAddFunction(self.module, name.as_ptr(), fn_type) };
+            // 添加特殊函数属性以支持原子操作
             self.emit_fn_attribute(fn_, "amdgpu-unsafe-fp-atomics", "true");
             self.emit_fn_attribute(fn_, "uniform-work-group-size", "true");
             self.emit_fn_attribute(fn_, "no-trapping-math", "true");
+            // 添加Intel特定属性以支持原子操作
+            self.emit_fn_attribute(fn_, "intel-forceinline-this-function", "true");
+            self.emit_fn_attribute(fn_, "intel-enable-atomics", "true");
+            self.emit_fn_attribute(fn_, "intel-no-global-variable-opt", "true");
         }
         if let ast::MethodName::Func(name) = func_decl.name {
             self.resolver.register(name, fn_);
@@ -401,16 +408,22 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             Self::func_call_convention()
         };
         unsafe { LLVMSetFunctionCallConv(fn_, call_conv) };
-        
+
         // Initialize function debug information
         if let Ok(func_name_str) = name.to_str() {
             unsafe {
-                if let Err(e) = self.debug_context.begin_function_debug_info(func_name_str, 1) {
-                    eprintln!("Warning: Failed to begin function debug info for {}: {}", func_name_str, e);
+                if let Err(e) = self
+                    .debug_context
+                    .begin_function_debug_info(func_name_str, 1)
+                {
+                    eprintln!(
+                        "Warning: Failed to begin function debug info for {}: {}",
+                        func_name_str, e
+                    );
                 }
             }
         }
-        
+
         if let Some(statements) = method.body {
             let variables_bb =
                 unsafe { LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr()) };
@@ -604,7 +617,7 @@ impl<'a> MethodEmitContext<'a> {
     ) -> Result<(), TranslateError> {
         // Add debug location for each statement
         self.add_debug_location_for_statement(&statement)?;
-        
+
         Ok(match statement {
             Statement::Variable(var) => self.emit_variable(var)?,
             Statement::Label(label) => self.emit_label_delayed(label)?,
@@ -640,7 +653,7 @@ impl<'a> MethodEmitContext<'a> {
             Statement::VectorRead(_) => "vector_read",
             Statement::VectorWrite(_) => "vector_write",
         };
-        
+
         // Add debug location tracking
         unsafe {
             if let Err(e) = self.debug_context.add_debug_location(
@@ -652,15 +665,19 @@ impl<'a> MethodEmitContext<'a> {
                 eprintln!("Warning: Failed to add debug location: {}", e);
             }
         }
-        
+
         // Increment line counter
         self.current_line += 1;
-        
+
         Ok(())
     }
 
     // Enhanced value resolution with graceful placeholder handling
-    fn get_value_or_placeholder(&mut self, id: SpirvWord, expected_type: Option<ast::ScalarType>) -> Result<LLVMValueRef, TranslateError> {
+    fn get_value_or_placeholder(
+        &mut self,
+        id: SpirvWord,
+        expected_type: Option<ast::ScalarType>,
+    ) -> Result<LLVMValueRef, TranslateError> {
         match self.resolver.value(id) {
             Ok(value) => Ok(value),
             Err(_) => {
@@ -671,7 +688,7 @@ impl<'a> MethodEmitContext<'a> {
                     // Default to 32-bit integer if no type hint
                     get_scalar_type(self.context, ast::ScalarType::B32)
                 };
-                
+
                 // Create zero constant as placeholder
                 let placeholder = unsafe {
                     if LLVMGetTypeKind(placeholder_type) == LLVMTypeKind::LLVMFloatTypeKind {
@@ -680,10 +697,10 @@ impl<'a> MethodEmitContext<'a> {
                         LLVMConstInt(placeholder_type, 0, 0)
                     }
                 };
-                
+
                 // Register the placeholder for future use
                 self.resolver.register(id, placeholder);
-                
+
                 eprintln!("Warning: Created placeholder for missing identifier");
                 Ok(placeholder)
             }
@@ -691,17 +708,21 @@ impl<'a> MethodEmitContext<'a> {
     }
 
     // Get or create placeholder for pointer types
-    fn get_or_create_placeholder_ptr(&mut self, id: SpirvWord, address_space: ast::StateSpace) -> Result<LLVMValueRef, TranslateError> {
+    fn get_or_create_placeholder_ptr(
+        &mut self,
+        id: SpirvWord,
+        address_space: ast::StateSpace,
+    ) -> Result<LLVMValueRef, TranslateError> {
         match self.resolver.value(id) {
             Ok(value) => Ok(value),
             Err(_) => {
                 // Create null pointer placeholder
                 let ptr_type = get_pointer_type(self.context, address_space)?;
                 let placeholder = unsafe { LLVMConstNull(ptr_type) };
-                
+
                 // Register the placeholder
                 self.resolver.register(id, placeholder);
-                
+
                 eprintln!("Warning: Created null pointer placeholder for missing identifier");
                 Ok(placeholder)
             }
@@ -768,12 +789,12 @@ fn get_instruction_name(inst: &ast::Instruction<SpirvWord>) -> &'static str {
 fn get_scalar_type_name(scalar_type: &ast::ScalarType) -> &'static str {
     match scalar_type {
         ast::ScalarType::U8 => "u8",
-        ast::ScalarType::U16 => "u16", 
+        ast::ScalarType::U16 => "u16",
         ast::ScalarType::U32 => "u32",
         ast::ScalarType::U64 => "u64",
         ast::ScalarType::S8 => "s8",
         ast::ScalarType::S16 => "s16",
-        ast::ScalarType::S32 => "s32", 
+        ast::ScalarType::S32 => "s32",
         ast::ScalarType::S64 => "s64",
         ast::ScalarType::B8 => "b8",
         ast::ScalarType::B16 => "b16",
@@ -806,11 +827,11 @@ impl<'a> MethodEmitContext<'a> {
         if let Some(align) = var.align {
             unsafe { LLVMSetAlignment(alloca, align) };
         }
-        
+
         // Add debug information for the variable
         let var_name = format!("var_{}", var.name.0); // Generate a simple name
         self.add_variable_debug_info(&var, alloca, &var_name)?;
-        
+
         if !var.array_init.is_empty() {
             todo!()
         }
@@ -827,18 +848,27 @@ impl<'a> MethodEmitContext<'a> {
         if let ast::Type::Scalar(scalar_type) = &var.v_type {
             let var_size_bits = ptx_type_size_bits(scalar_type);
             let type_name = get_scalar_type_name(scalar_type);
-            
+
             // Create variable location based on state space
             let location = match var.state_space {
                 ast::StateSpace::Reg => VariableLocation::Register(var_name.to_string()),
-                ast::StateSpace::Local => VariableLocation::Memory { address: 0, size: (var_size_bits / 8) as u32 },
-                ast::StateSpace::Shared => VariableLocation::Memory { address: 0, size: (var_size_bits / 8) as u32 },
-                ast::StateSpace::Global => VariableLocation::Memory { address: 0, size: (var_size_bits / 8) as u32 },
+                ast::StateSpace::Local => VariableLocation::Memory {
+                    address: 0,
+                    size: (var_size_bits / 8) as u32,
+                },
+                ast::StateSpace::Shared => VariableLocation::Memory {
+                    address: 0,
+                    size: (var_size_bits / 8) as u32,
+                },
+                ast::StateSpace::Global => VariableLocation::Memory {
+                    address: 0,
+                    size: (var_size_bits / 8) as u32,
+                },
                 ast::StateSpace::Const => VariableLocation::Constant(var_name.to_string()),
                 ast::StateSpace::Param => VariableLocation::Constant(var_name.to_string()),
                 _ => VariableLocation::Register(var_name.to_string()), // Default fallback
             };
-            
+
             // Add debug info for the variable
             unsafe {
                 if let Err(e) = self.debug_context.add_variable_debug_info(
@@ -850,11 +880,14 @@ impl<'a> MethodEmitContext<'a> {
                     alloca,
                     &location,
                 ) {
-                    eprintln!("Warning: Failed to add variable debug info for {}: {}", var_name, e);
+                    eprintln!(
+                        "Warning: Failed to add variable debug info for {}: {}",
+                        var_name, e
+                    );
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -3236,5 +3269,35 @@ fn rounding_to_llvm(this: ast::RoundingMode) -> u32 {
         ptx_parser::RoundingMode::NearestEven => 1,
         ptx_parser::RoundingMode::PositiveInf => 2,
         ptx_parser::RoundingMode::NegativeInf => 3,
+    }
+}
+
+// Implementation of missing function ptx_type_size_bits
+fn ptx_type_size_bits(scalar_type: &ast::ScalarType) -> u64 {
+    match scalar_type {
+        ast::ScalarType::B8 => 8,
+        ast::ScalarType::B16 => 16,
+        ast::ScalarType::B32 => 32,
+        ast::ScalarType::B64 => 64,
+        ast::ScalarType::B128 => 128,
+        ast::ScalarType::F16 => 16,
+        ast::ScalarType::F32 => 32,
+        ast::ScalarType::F64 => 64,
+        ast::ScalarType::S8 => 8,
+        ast::ScalarType::S16 => 16,
+        ast::ScalarType::S32 => 32,
+        ast::ScalarType::S64 => 64,
+        ast::ScalarType::U8 => 8,
+        ast::ScalarType::U16 => 16,
+        ast::ScalarType::U32 => 32,
+        ast::ScalarType::U64 => 64,
+        ast::ScalarType::Pred => 1,
+        // Handle vector types (each of these is 32 bits total)
+        ast::ScalarType::S16x2 => 32,
+        ast::ScalarType::F16x2 => 32,
+        ast::ScalarType::BF16x2 => 32,
+        ast::ScalarType::U16x2 => 32,
+        // Default for any other types
+        _ => 64,
     }
 }

@@ -3,12 +3,17 @@
 #include <llvm-c/Core.h>
 #include <llvm-c/DebugInfo.h>
 #include <llvm-c/Target.h>
+#include <llvm-c/Types.h>
 #include <llvm/ADT/PointerUnion.h>
 #include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
+#include <llvm/IR/DebugProgramInstruction.h>
 
 #pragma GCC diagnostic pop
 
@@ -197,21 +202,41 @@ LLVMZludaInsertDeclareAtEnd(LLVMBuilderRef Builder, LLVMValueRef Storage,
   // Value*) So we need to create the intrinsic directly to get an Instruction*
 
   Function *DeclareFn =
-      Intrinsic::getDeclaration(M, Intrinsic::dbg_declare, ArrayRef<Type *>());
+      Intrinsic::getOrInsertDeclaration(M, Intrinsic::dbg_declare, ArrayRef<Type *>());
   if (!DeclareFn)
     return nullptr;
 
   IRBuilder<> IB(unwrap(InsertAtEnd));
-  Value *Args[] = {
-      unwrap(Storage),
-      MetadataAsValue::get(B->getContext(), unwrap<DILocalVariable>(VarInfo)),
-      MetadataAsValue::get(B->getContext(), unwrap<DIExpression>(Expr))};
 
+  // Carefully construct arguments with correct types
+  Value *StorageVal = unwrap(Storage);
+  MetadataAsValue *VarInfoVal =
+      MetadataAsValue::get(B->getContext(), unwrap(VarInfo));
+  MetadataAsValue *ExprVal =
+      MetadataAsValue::get(B->getContext(), unwrap(Expr));
+
+  // Create arguments array
+  Value *Args[] = {StorageVal, VarInfoVal, ExprVal};
+
+  // Create the call instruction
   CallInst *Call = IB.CreateCall(DeclareFn, Args);
-  Call->setDebugLoc(DebugLoc(unwrap<DILocation>(DL)));
+
+  // Set debug location if available
+  if (DL)
+    Call->setDebugLoc(DebugLoc(unwrap<DILocation>(DL)));
 
   return wrap(Call);
 }
+
+// Implement LLVMZludaDIBuilderInsertDeclareRecordAtEnd for record-based debug
+// declarations
+extern "C" LLVMDbgRecordRef LLVMZludaDIBuilderInsertDeclareRecordAtEnd(
+    LLVMDIBuilderRef Builder, LLVMValueRef Storage, LLVMMetadataRef VarInfo,
+    LLVMMetadataRef Expr, LLVMMetadataRef DL, LLVMBasicBlockRef InsertAtEnd) {
+  return LLVMDIBuilderInsertDeclareRecordAtEnd(Builder, Storage, VarInfo, Expr,
+                                               DL, InsertAtEnd);
+}
+
 unsigned long long LLVMZludaSizeOfTypeInBits(LLVMTargetDataRef TD,
                                              LLVMTypeRef Ty) {
   return LLVMSizeOfTypeInBits(TD, Ty);

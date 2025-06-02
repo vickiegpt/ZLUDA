@@ -2,6 +2,9 @@
 use llvm_sys::prelude::*;
 pub use llvm_sys::*;
 
+// 添加LLVMDbgRecordRef类型
+pub type LLVMDbgRecordRef = *mut llvm_sys::LLVMOpaqueDbgRecord;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LLVMZludaAtomicRMWBinOp {
@@ -80,10 +83,7 @@ extern "C" {
     ) -> LLVMValueRef;
 
     // DWARF Debug Info functions
-    pub fn LLVMZludaSetCurrentDebugLocation(
-        Builder: LLVMBuilderRef,
-        L: LLVMMetadataRef,
-    );
+    pub fn LLVMZludaSetCurrentDebugLocation(Builder: LLVMBuilderRef, L: LLVMMetadataRef);
 
     pub fn LLVMZludaInsertDeclareAtEnd(
         Builder: LLVMBuilderRef,
@@ -93,6 +93,15 @@ extern "C" {
         DL: LLVMMetadataRef,
         InsertAtEnd: LLVMBasicBlockRef,
     ) -> LLVMValueRef;
+
+    pub fn LLVMZludaDIBuilderInsertDeclareRecordAtEnd(
+        Builder: LLVMDIBuilderRef,
+        Storage: LLVMValueRef,
+        VarInfo: LLVMMetadataRef,
+        Expr: LLVMMetadataRef,
+        DL: LLVMMetadataRef,
+        InsertAtEnd: LLVMBasicBlockRef,
+    ) -> LLVMDbgRecordRef;
 
     pub fn LLVMZludaSizeOfTypeInBits(TD: LLVMContextRef, Ty: LLVMTypeRef) -> u64;
 }

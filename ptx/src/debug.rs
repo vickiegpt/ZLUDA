@@ -231,6 +231,36 @@ impl PtxDwarfBuilder {
         ))
     }
 
+    /// Create a function/subroutine type for debug info
+    pub unsafe fn create_function_type(
+        &self,
+        return_type: Option<LLVMMetadataRef>,
+        parameter_types: &[LLVMMetadataRef],
+    ) -> Result<LLVMMetadataRef, String> {
+        // Create array of parameter types
+        let mut all_types = Vec::new();
+        
+        // Add return type as first element (LLVM convention)
+        if let Some(ret_type) = return_type {
+            all_types.push(ret_type);
+        } else {
+            // Create void type for no return
+            let void_type = self.create_basic_type("void", 0, 0)?;
+            all_types.push(void_type);
+        }
+        
+        // Add parameter types
+        all_types.extend_from_slice(parameter_types);
+        
+        Ok(LLVMDIBuilderCreateSubroutineType(
+            self.di_builder,
+            self.file, // file
+            all_types.as_mut_ptr(),
+            all_types.len() as u32,
+            0, // flags
+        ))
+    }
+
     /// Finalize debug info generation
     pub unsafe fn finalize(&self) {
         LLVMDIBuilderFinalize(self.di_builder);

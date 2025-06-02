@@ -8,11 +8,13 @@ edition = "2021"
 default = ["intel"]
 amd = []
 intel = []
+tenstorrent = []
 
 [lib]
 
 [dependencies]
 amd_comgr_sys = { path = "../ext/amd_comgr-sys"  }
 intel_comgr_sys = { path = "../ext/intel_comgr-sys"  }
+tt_comgr_sys = { path = "../ext/tt_comgr-sys" }
 hip_runtime_sys = { path = "../ext/hip_runtime-sys"  }
 ze_runtime_sys = { path = "../ext/ze_runtime-sys"  }

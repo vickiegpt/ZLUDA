@@ -22,6 +22,8 @@ members = [
     "ext/intel_comgr-sys",
     "ext/ze_runtime-sys",
     "ext/hip_runtime-sys",
+    "ext/tt_comgr-sys",
+    "ext/tt_runtime-sys",
 ]
 
 default-members = ["zluda", "zluda_ml", "zluda_inject", "zluda_redirect"]
@@ -29,4 +31,5 @@ default-members = ["zluda", "zluda_ml", "zluda_inject", "zluda_redirect"]
 features = [
     "amd",
     "intel",
+    "tenstorrent",
 ]

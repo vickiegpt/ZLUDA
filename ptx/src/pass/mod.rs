@@ -29,6 +29,9 @@ mod replace_instructions_with_function_calls;
 mod replace_known_functions;
 mod resolve_function_pointers;
 
+// Re-export necessary types for emit_llvm.rs
+pub use debug_integration::DebugAwarePtxContext;
+
 #[cfg(feature = "amd")]
 static ZLUDA_PTX_IMPL: &'static [u8] = include_bytes!("../../lib/zluda_ptx_impl.bc");
 #[cfg(feature = "intel")]
@@ -98,6 +101,45 @@ pub struct Module {
 impl Module {
     pub fn linked_bitcode(&self) -> &[u8] {
         ZLUDA_PTX_IMPL
+    }
+
+    pub fn print_to_string(&self) -> Result<String, String> {
+        use std::fs;
+        use std::io::Write;
+        use std::process::Command;
+
+        // Create a temporary file to store the bitcode
+        let temp_bc_path = "/tmp/zluda_temp.bc";
+        let temp_ll_path = "/tmp/zluda_temp.ll";
+
+        // Write the LLVM IR to a temp file
+        fs::write(temp_bc_path, &*self.llvm_ir)
+            .map_err(|e| format!("Failed to write temporary bitcode file: {}", e))?;
+
+        // Use llvm-dis to convert the bitcode to text
+        let llvm_dis_output = Command::new("llvm-dis-18")
+            .arg(temp_bc_path)
+            .arg("-o")
+            .arg(temp_ll_path)
+            .output()
+            .map_err(|e| format!("Failed to execute llvm-dis: {}", e))?;
+
+        if !llvm_dis_output.status.success() {
+            return Err(format!(
+                "llvm-dis failed: {}",
+                String::from_utf8_lossy(&llvm_dis_output.stderr)
+            ));
+        }
+
+        // Read the resulting text file
+        let ir_text = fs::read_to_string(temp_ll_path)
+            .map_err(|e| format!("Failed to read disassembled LLVM IR: {}", e))?;
+
+        // Clean up temp files
+        let _ = fs::remove_file(temp_bc_path);
+        let _ = fs::remove_file(temp_ll_path);
+
+        Ok(ir_text)
     }
 }
 

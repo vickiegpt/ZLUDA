@@ -128,8 +128,8 @@ ze_runner_result_t run_spirv_kernel(
     
     DEBUG_PRINT("Command list created successfully");
     
-    // 设置编译标志，启用原子操作支持
-    const char* build_flags = "-ze-intel-enable-atomics";
+    // 设置编译标志，启用原子操作支持并禁用可能干扰原子操作的优化
+    const char* build_flags = "-ze-intel-enable-atomics -ze-opt-disable -ze-intel-enable-spirv-linkage -ze-intel-has-buffer-offset-impl -ze-intel-enable-persistent-usc-cache -ze-ext=intel-subgroups -ze-ext=ze_ext_subgroups";
     
     // 创建模块
     ze_module_desc_t module_desc = {
