@@ -7,7 +7,7 @@ use hip_runtime_sys::*;
 use std::{ffi::CStr, ptr};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 use tt_runtime_sys;
 #[cfg(feature = "amd")]
 pub(crate) struct Module {
@@ -22,7 +22,7 @@ pub(crate) struct Module {
     functions: Vec<(String, ze_kernel_handle_t)>,
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) struct Module {
     device_id: i32,
     program: Option<tt_runtime_sys::Program>,
@@ -68,7 +68,7 @@ impl ZludaObject for Module {
     }
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 impl ZludaObject for Module {
     const COOKIE: usize = 0xe9138bd040487d4a;
 
@@ -204,6 +204,7 @@ fn get_current_context_and_device() -> Result<(ze_context_handle_t, ze_device_ha
     Ok((context.context, context.device))
 }
 
+#[cfg(any(feature = "amd", feature = "intel"))]
 pub(crate) fn unload(hmod: CUmodule) -> CUresult {
     super::drop_checked::<Module>(hmod)
 }
@@ -312,5 +313,106 @@ fn ze_to_cuda_result(result: ze_result_t) -> CUresult {
         ze_result_t::ZE_RESULT_ERROR_INVALID_NULL_POINTER => CUresult::ERROR_INVALID_VALUE,
         ze_result_t::ZE_RESULT_ERROR_UNINITIALIZED => CUresult::ERROR_NOT_INITIALIZED,
         _ => CUresult::ERROR_UNKNOWN,
+    }
+}
+
+// Tenstorrent module implementations
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -> CUresult {
+    if image.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    // Create a new Tenstorrent module
+    let new_module = Module {
+        device_id: 0, // Default device
+        program: None,
+        kernels: Vec::new(),
+    };
+
+    let module_box = Box::new(new_module);
+    let module_ptr = Box::into_raw(module_box);
+    *module = CUmodule(module_ptr as *mut _);
+
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn unload(hmod: CUmodule) -> CUresult {
+    if hmod.0.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    // Convert back to box and drop
+    let module_ptr = hmod.0 as *mut Module;
+    unsafe {
+        let _module_box = Box::from_raw(module_ptr);
+        // Module will be dropped and cleaned up automatically
+    }
+
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get_function(
+    hfunc: *mut CUfunction,
+    hmod: CUmodule,
+    name: *const ::core::ffi::c_char,
+) -> CUresult {
+    if hfunc.is_null() || hmod.0.is_null() || name.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    let function_name = unsafe {
+        std::ffi::CStr::from_ptr(name).to_str()
+            .map_err(|_| CUerror::INVALID_VALUE)?
+    };
+
+    // For Tenstorrent, create a placeholder function handle
+    // In a real implementation, this would look up the kernel in the program
+    let tt_kernel = TtKernel {
+        device_id: 0,
+        program_id: 0,
+        kernel_name: function_name.to_string(),
+    };
+
+    let kernel_box = Box::new(tt_kernel);
+    let kernel_ptr = Box::into_raw(kernel_box);
+    
+    unsafe { *hfunc = CUfunction(kernel_ptr as *mut _) };
+    Ok(())
+}
+
+// Tenstorrent kernel structure
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) struct TtKernel {
+    device_id: i32,
+    program_id: usize,
+    kernel_name: String,
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+unsafe impl Send for TtKernel {}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+unsafe impl Sync for TtKernel {}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl ZludaObject for TtKernel {
+    const COOKIE: usize = 0xad74ceadb9b2d51c;
+
+    type CudaHandle = CUfunction;
+
+    fn drop_checked(&mut self) -> CUresult {
+        // Clean up Tenstorrent kernel
+        // In a real implementation, this would free kernel resources
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> super::FromCuda<'a, CUfunction> for &'a TtKernel {
+    fn from_cuda(handle: &'a CUfunction) -> Result<Self, CUerror> {
+        super::as_ref::<TtKernel>(handle).as_result()
     }
 }

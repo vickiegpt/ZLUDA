@@ -504,3 +504,75 @@ impl From<ZeResult> for Result<(), CUerror> {
 pub fn ze_result_to_result(result: ze_result_t) -> Result<(), CUerror> {
     ZeResult(result).into()
 }
+
+// Tenstorrent-specific FromCuda implementations for types not covered by existing macros
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, *mut CUuuid_st> for *mut [u8; 16] {
+    fn from_cuda(x: &'a *mut CUuuid_st) -> Result<Self, CUerror> {
+        Ok(x.cast::<[u8; 16]>())
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, *mut i8> for *mut [u8; 8] {
+    fn from_cuda(x: &'a *mut i8) -> Result<Self, CUerror> {
+        Ok(x.cast::<[u8; 8]>())
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, *mut u32> for *mut u32 {
+    fn from_cuda(x: &'a *mut u32) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, *mut CUcontext> for *mut CUcontext {
+    fn from_cuda(x: &'a *mut CUcontext) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, *mut CUfunction> for *mut CUfunction {
+    fn from_cuda(x: &'a *mut CUfunction) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, CUfunction> for *mut module::TtKernel {
+    fn from_cuda(handle: &'a CUfunction) -> Result<Self, CUerror> {
+        // Convert CUfunction handle to TtKernel pointer
+        Ok(handle.0 as *mut module::TtKernel)
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, CUstream> for *mut ::core::ffi::c_void {
+    fn from_cuda(x: &'a CUstream) -> Result<Self, CUerror> {
+        Ok(x.0 as *mut ::core::ffi::c_void)
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, CUdeviceptr_v2> for CUdeviceptr_v2 {
+    fn from_cuda(x: &'a CUdeviceptr_v2) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, CUpointer_attribute_enum> for CUpointer_attribute_enum {
+    fn from_cuda(x: &'a CUpointer_attribute_enum) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
+    fn from_cuda(x: &'a CUfunction_attribute_enum) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}

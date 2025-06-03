@@ -117,7 +117,7 @@ impl Module {
             .map_err(|e| format!("Failed to write temporary bitcode file: {}", e))?;
 
         // Use llvm-dis to convert the bitcode to text
-        let llvm_dis_output = Command::new("llvm-dis-18")
+        let llvm_dis_output = Command::new("llvm-dis-20")
             .arg(temp_bc_path)
             .arg("-o")
             .arg(temp_ll_path)

@@ -11,19 +11,19 @@ use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
 use crate::{
-    intel_comgr_action_info_set_language, intel_comgr_action_info_set_option_list,
-    intel_comgr_action_info_set_target, intel_comgr_action_info_t, intel_comgr_action_kind_s,
-    intel_comgr_create_action_info, intel_comgr_create_data, intel_comgr_create_data_set,
-    intel_comgr_data_get_bytes, intel_comgr_data_kind_s, intel_comgr_data_set_add,
-    intel_comgr_data_set_bytes, intel_comgr_data_set_name, intel_comgr_data_set_t,
-    intel_comgr_data_t, intel_comgr_do_action, intel_comgr_get_data, intel_comgr_get_data_count,
-    intel_comgr_language_s, intel_comgr_release_action_info, intel_comgr_release_data,
-    intel_comgr_release_data_set, intel_comgr_status_s, intel_comgr_status_t,
+    tt_comgr_action_info_set_language, tt_comgr_action_info_set_option_list,
+    tt_comgr_action_info_set_target, tt_comgr_action_info_t, tt_comgr_action_kind_s,
+    tt_comgr_create_action_info, tt_comgr_create_data, tt_comgr_create_data_set,
+    tt_comgr_data_get_bytes, tt_comgr_data_kind_s, tt_comgr_data_set_add,
+    tt_comgr_data_set_bytes, tt_comgr_data_set_name, tt_comgr_data_set_t,
+    tt_comgr_data_t, tt_comgr_do_action, tt_comgr_get_data, tt_comgr_get_data_count,
+    tt_comgr_language_s, tt_comgr_release_action_info, tt_comgr_release_data,
+    tt_comgr_release_data_set, tt_comgr_status_s, tt_comgr_status_t,
 };
 
 // Actual internal representation of data
 pub(crate) struct DataContent {
-    pub(crate) kind: intel_comgr_data_kind_s,
+    pub(crate) kind: tt_comgr_data_kind_s,
     pub(crate) content: Vec<u8>,
     pub(crate) name: Option<String>,
 }
@@ -51,7 +51,7 @@ pub(crate) fn get_next_handle() -> u64 {
 
 #[derive(Default, Clone)]
 pub(crate) struct ActionInfo {
-    pub(crate) language: Option<intel_comgr_language_s>,
+    pub(crate) language: Option<tt_comgr_language_s>,
     pub(crate) options: Vec<String>,
     pub(crate) working_directory: Option<String>,
     pub(crate) target: Option<String>,
@@ -60,24 +60,24 @@ pub(crate) struct ActionInfo {
 struct ActionContext {
     temp_dir: PathBuf,
     options: Vec<String>,
-    language: intel_comgr_language_s,
-    input_files: Vec<(PathBuf, intel_comgr_data_kind_s)>,
+    language: tt_comgr_language_s,
+    input_files: Vec<(PathBuf, tt_comgr_data_kind_s)>,
     target: Option<String>,
-    action_kind: intel_comgr_action_kind_s,
+    action_kind: tt_comgr_action_kind_s,
 }
 
 pub fn perform_action(
-    action_kind: intel_comgr_action_kind_s,
-    action_info: intel_comgr_action_info_t,
-    input_set: intel_comgr_data_set_t,
-    output_set: intel_comgr_data_set_t,
-) -> intel_comgr_status_t {
+    action_kind: tt_comgr_action_kind_s,
+    action_info: tt_comgr_action_info_t,
+    input_set: tt_comgr_data_set_t,
+    output_set: tt_comgr_data_set_t,
+) -> tt_comgr_status_t {
     // Create a temporary directory for the operation
     let dir = match tempdir() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Failed to create temporary directory: {}", e);
-            return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+            return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
         }
     };
 
@@ -85,7 +85,7 @@ pub fn perform_action(
     let action_info_lock = ACTION_INFO_STORE.lock().unwrap();
     let action_data = match action_info_lock.get(&action_info.handle) {
         Some(data) => data.clone(),
-        None => return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
+        None => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
     };
     drop(action_info_lock);
 
@@ -93,7 +93,7 @@ pub fn perform_action(
     let data_set_lock = DATA_SET_STORE.lock().unwrap();
     let data_handles = match data_set_lock.get(&input_set.handle) {
         Some(handles) => handles.clone(),
-        None => return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
+        None => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
     };
     drop(data_set_lock);
 
@@ -146,7 +146,7 @@ pub fn perform_action(
         options: action_data.options,
         language: action_data
             .language
-            .unwrap_or(intel_comgr_language_s::INTEL_COMGR_LANGUAGE_NONE),
+            .unwrap_or(tt_comgr_language_s::TT_COMGR_LANGUAGE_NONE),
         input_files,
         target: action_data.target,
         action_kind,
@@ -165,7 +165,7 @@ pub fn perform_action(
         8 => compile_to_fatbin(&ctx),
         _ => {
             eprintln!("Unknown action kind: {}", action_kind.0);
-            return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+            return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
         }
     };
 
@@ -185,14 +185,14 @@ pub fn perform_action(
 // Helper function to add output files to the output set
 fn add_outputs_to_set(
     ctx: &ActionContext,
-    output_set: intel_comgr_data_set_t,
-) -> intel_comgr_status_t {
+    output_set: tt_comgr_data_set_t,
+) -> tt_comgr_status_t {
     let output_dir = ctx.temp_dir.clone();
 
     // Get all files in the output directory
     let entries = match fs::read_dir(&output_dir) {
         Ok(entries) => entries,
-        Err(_) => return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR),
+        Err(_) => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR),
     };
 
     // Track if we've added any output files
@@ -230,7 +230,7 @@ fn add_outputs_to_set(
                     // Add object file to output set as relocatable
                     if let Err(e) = add_file_to_set(
                         &path,
-                        intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_RELOCATABLE,
+                        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_RELOCATABLE,
                         output_set,
                     ) {
                         eprintln!("Warning: Failed to add relocatable file: {:?}", e);
@@ -247,7 +247,7 @@ fn add_outputs_to_set(
                     // Add bitcode file to output set
                     if let Err(e) = add_file_to_set(
                         &path,
-                        intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC,
+                        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC,
                         output_set,
                     ) {
                         eprintln!("Warning: Failed to add bitcode file: {:?}", e);
@@ -259,7 +259,7 @@ fn add_outputs_to_set(
                     // Add assembly file to output set
                     if let Err(e) = add_file_to_set(
                         &path,
-                        intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_SOURCE,
+                        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_SOURCE,
                         output_set,
                     ) {
                         eprintln!("Warning: Failed to add assembly file: {:?}", e);
@@ -271,7 +271,7 @@ fn add_outputs_to_set(
                     // Add log file to output set
                     if let Err(e) = add_file_to_set(
                         &path,
-                        intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_LOG,
+                        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_LOG,
                         output_set,
                     ) {
                         eprintln!("Warning: Failed to add log file: {:?}", e);
@@ -288,7 +288,7 @@ fn add_outputs_to_set(
     // This ensures downstream code has something to process
     if !added_files
         && ctx.action_kind.0
-            == intel_comgr_action_kind_s::INTEL_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE.0
+            == tt_comgr_action_kind_s::TT_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE.0
     {
         eprintln!("No output files found - creating dummy relocatable output");
 
@@ -428,8 +428,8 @@ fn add_outputs_to_set(
         // Create the data object for the dummy file
         let mut data = unsafe { mem::zeroed() };
         if let Err(e) = unsafe {
-            intel_comgr_create_data(
-                intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_RELOCATABLE,
+            tt_comgr_create_data(
+                tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_RELOCATABLE,
                 &mut data,
             )
         } {
@@ -439,34 +439,34 @@ fn add_outputs_to_set(
 
         // Set the data name
         let name = CString::new("mock_output.o").unwrap();
-        if let Err(e) = unsafe { intel_comgr_data_set_name(data, name.as_ptr()) } {
+        if let Err(e) = unsafe { tt_comgr_data_set_name(data, name.as_ptr()) } {
             eprintln!("Failed to set data name: {:?}", e);
-            unsafe { intel_comgr_release_data(data).ok() };
+            unsafe { tt_comgr_release_data(data).ok() };
             return Err(e);
         }
 
         // Set the data content
         if let Err(e) = unsafe {
-            intel_comgr_data_set_bytes(
+            tt_comgr_data_set_bytes(
                 data,
                 dummy_content.as_ptr() as *const c_void,
                 dummy_content.len(),
             )
         } {
             eprintln!("Failed to set data bytes: {:?}", e);
-            unsafe { intel_comgr_release_data(data).ok() };
+            unsafe { tt_comgr_release_data(data).ok() };
             return Err(e);
         }
 
         // Add data to the output set
-        if let Err(e) = unsafe { intel_comgr_data_set_add(output_set, data) } {
+        if let Err(e) = unsafe { tt_comgr_data_set_add(output_set, data) } {
             eprintln!("Failed to add data to output set: {:?}", e);
-            unsafe { intel_comgr_release_data(data).ok() };
+            unsafe { tt_comgr_release_data(data).ok() };
             return Err(e);
         }
 
         // Release the data (it's been added to the set)
-        unsafe { intel_comgr_release_data(data).ok() };
+        unsafe { tt_comgr_release_data(data).ok() };
         eprintln!("Added dummy relocatable file to output set");
 
         added_files = true;
@@ -482,12 +482,12 @@ fn add_outputs_to_set(
 // Helper function to add a file to a data set
 fn add_file_to_set(
     file_path: &Path,
-    kind: intel_comgr_data_kind_s,
-    data_set: intel_comgr_data_set_t,
-) -> intel_comgr_status_t {
+    kind: tt_comgr_data_kind_s,
+    data_set: tt_comgr_data_set_t,
+) -> tt_comgr_status_t {
     // Create a new data object
     let mut data = unsafe { mem::zeroed() };
-    if let Err(e) = unsafe { intel_comgr_create_data(kind, &mut data) } {
+    if let Err(e) = unsafe { tt_comgr_create_data(kind, &mut data) } {
         eprintln!("Failed to create data: {:?}", e);
         return Err(e);
     }
@@ -498,20 +498,20 @@ fn add_file_to_set(
             Ok(cstr) => cstr,
             Err(_) => {
                 eprintln!("Error converting filename to CString");
-                unsafe { intel_comgr_release_data(data).ok() };
-                return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                unsafe { tt_comgr_release_data(data).ok() };
+                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
             }
         },
         None => {
             eprintln!("Error getting filename");
-            unsafe { intel_comgr_release_data(data).ok() };
-            return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+            unsafe { tt_comgr_release_data(data).ok() };
+            return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
         }
     };
 
-    if let Err(e) = unsafe { intel_comgr_data_set_name(data, name.as_ptr()) } {
+    if let Err(e) = unsafe { tt_comgr_data_set_name(data, name.as_ptr()) } {
         eprintln!("Failed to set data name: {:?}", e);
-        unsafe { intel_comgr_release_data(data).ok() };
+        unsafe { tt_comgr_release_data(data).ok() };
         return Err(e);
     }
 
@@ -520,47 +520,47 @@ fn add_file_to_set(
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("Error reading file {}: {}", file_path.display(), e);
-            unsafe { intel_comgr_release_data(data).ok() };
-            return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+            unsafe { tt_comgr_release_data(data).ok() };
+            return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
         }
     };
 
     // Set the data content
     if let Err(e) = unsafe {
-        intel_comgr_data_set_bytes(data, content.as_ptr() as *const c_void, content.len())
+        tt_comgr_data_set_bytes(data, content.as_ptr() as *const c_void, content.len())
     } {
         eprintln!("Failed to set data bytes: {:?}", e);
-        unsafe { intel_comgr_release_data(data).ok() };
+        unsafe { tt_comgr_release_data(data).ok() };
         return Err(e);
     }
 
     // Add data to the set
-    if let Err(e) = unsafe { intel_comgr_data_set_add(data_set, data) } {
+    if let Err(e) = unsafe { tt_comgr_data_set_add(data_set, data) } {
         eprintln!("Failed to add data to set: {:?}", e);
-        unsafe { intel_comgr_release_data(data).ok() };
+        unsafe { tt_comgr_release_data(data).ok() };
         return Err(e);
     }
 
     // Release the data (it's been added to the set)
-    unsafe { intel_comgr_release_data(data).ok() };
+    unsafe { tt_comgr_release_data(data).ok() };
 
     Ok(())
 }
 
 // Action implementations using icpx command
 
-fn preprocess_source(ctx: &ActionContext) -> intel_comgr_status_t {
+fn preprocess_source(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find source files
     let source_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_SOURCE.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_SOURCE.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if source_files.is_empty() {
         eprintln!("Error: No source files found for preprocessing");
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Process each source file
@@ -605,7 +605,7 @@ fn preprocess_source(ctx: &ActionContext) -> intel_comgr_status_t {
 
                 // Add include file info
                 for (include_path, kind) in &ctx.input_files {
-                    if kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_INCLUDE.0 {
+                    if kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_INCLUDE.0 {
                         preprocessed_content.push_str(&format!(
                             "#include \"{}\"\n",
                             include_path
@@ -641,13 +641,13 @@ fn preprocess_source(ctx: &ActionContext) -> intel_comgr_status_t {
                     }
                     Err(e) => {
                         eprintln!("Error writing preprocessed file: {}", e);
-                        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
                     }
                 }
             }
             Err(e) => {
                 eprintln!("Error reading source file: {}", e);
-                return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -655,18 +655,18 @@ fn preprocess_source(ctx: &ActionContext) -> intel_comgr_status_t {
     Ok(())
 }
 
-fn add_precompiled_headers(ctx: &ActionContext) -> intel_comgr_status_t {
+fn add_precompiled_headers(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find header files
     let header_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_INCLUDE.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_INCLUDE.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if header_files.is_empty() {
         eprintln!("Error: No header files found for precompilation");
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Process each header file to create PCH
@@ -725,13 +725,13 @@ fn add_precompiled_headers(ctx: &ActionContext) -> intel_comgr_status_t {
                     }
                     Err(e) => {
                         eprintln!("Error writing mock PCH file: {}", e);
-                        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
                     }
                 }
             }
             Err(e) => {
                 eprintln!("Error reading header file: {}", e);
-                return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -739,18 +739,18 @@ fn add_precompiled_headers(ctx: &ActionContext) -> intel_comgr_status_t {
     Ok(())
 }
 
-fn compile_source_to_bc(ctx: &ActionContext) -> intel_comgr_status_t {
+fn compile_source_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find source files
     let source_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_SOURCE.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_SOURCE.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if source_files.is_empty() {
         eprintln!("Error: No source files found for BC compilation");
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Check if any input file is MLIR format
@@ -768,7 +768,7 @@ fn compile_source_to_bc(ctx: &ActionContext) -> intel_comgr_status_t {
         .input_files
         .iter()
         .filter(|(_, kind)| {
-            kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_PRECOMPILED_HEADER.0
+            kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_PRECOMPILED_HEADER.0
         })
         .map(|(path, _)| path.clone())
         .collect();
@@ -859,13 +859,13 @@ fn compile_source_to_bc(ctx: &ActionContext) -> intel_comgr_status_t {
                     }
                     Err(e) => {
                         eprintln!("Error writing mock bitcode file: {}", e);
-                        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
                     }
                 }
             }
             Err(e) => {
                 eprintln!("Error reading source file: {}", e);
-                return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -873,18 +873,18 @@ fn compile_source_to_bc(ctx: &ActionContext) -> intel_comgr_status_t {
     Ok(())
 }
 
-fn add_device_libraries(ctx: &ActionContext) -> intel_comgr_status_t {
+fn add_device_libraries(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find bitcode files
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if bc_files.is_empty() {
         eprintln!("Error: No bitcode files found for adding device libraries");
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Find library files (assuming they're in BC format)
@@ -892,8 +892,8 @@ fn add_device_libraries(ctx: &ActionContext) -> intel_comgr_status_t {
         .input_files
         .iter()
         .filter(|(_, kind)| {
-            kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC.0
-                || kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_RELOCATABLE.0
+            kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0
+                || kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_RELOCATABLE.0
         })
         .filter(|(path, _)| {
             // This is a simple heuristic - libraries might have "lib" prefix
@@ -972,13 +972,13 @@ fn add_device_libraries(ctx: &ActionContext) -> intel_comgr_status_t {
                     }
                     Err(e) => {
                         eprintln!("Error writing combined bitcode file: {}", e);
-                        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
                     }
                 }
             }
             Err(e) => {
                 eprintln!("Error reading original bitcode file: {}", e);
-                return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -986,12 +986,12 @@ fn add_device_libraries(ctx: &ActionContext) -> intel_comgr_status_t {
     Ok(())
 }
 
-fn link_bc_to_bc(ctx: &ActionContext) -> intel_comgr_status_t {
+fn link_bc_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find all bitcode files
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
@@ -1000,7 +1000,7 @@ fn link_bc_to_bc(ctx: &ActionContext) -> intel_comgr_status_t {
             "Error: Need at least 2 bitcode files to link, found {}",
             bc_files.len()
         );
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     let output_file = ctx.temp_dir.join("linked.bc");
@@ -1027,23 +1027,23 @@ fn link_bc_to_bc(ctx: &ActionContext) -> intel_comgr_status_t {
         }
         Err(e) => {
             eprintln!("Error copying bitcode file: {}", e);
-            Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR)
+            Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
         }
     }
 }
 
-fn optimize_bc(ctx: &ActionContext) -> intel_comgr_status_t {
+fn optimize_bc(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find bitcode files
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if bc_files.is_empty() {
         eprintln!("Error: No bitcode files found for optimization");
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Process each file
@@ -1074,7 +1074,7 @@ fn optimize_bc(ctx: &ActionContext) -> intel_comgr_status_t {
             }
             Err(e) => {
                 eprintln!("Error copying bitcode file: {}", e);
-                return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -1082,18 +1082,18 @@ fn optimize_bc(ctx: &ActionContext) -> intel_comgr_status_t {
     Ok(())
 }
 
-fn codegen_to_relocatable(ctx: &ActionContext) -> intel_comgr_status_t {
+fn codegen_to_relocatable(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find bitcode files
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if bc_files.is_empty() {
         eprintln!("Error: No bitcode files found for code generation");
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Process each file
@@ -1262,18 +1262,18 @@ fn codegen_to_relocatable(ctx: &ActionContext) -> intel_comgr_status_t {
     Ok(())
 }
 
-fn codegen_to_assembly(ctx: &ActionContext) -> intel_comgr_status_t {
+fn codegen_to_assembly(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find bitcode files
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if bc_files.is_empty() {
         eprintln!("Error: No bitcode files found for assembly generation");
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Process each file
@@ -1315,7 +1315,7 @@ fn codegen_to_assembly(ctx: &ActionContext) -> intel_comgr_status_t {
             }
             Err(e) => {
                 eprintln!("Error creating mock assembly file: {}", e);
-                return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -1323,18 +1323,18 @@ fn codegen_to_assembly(ctx: &ActionContext) -> intel_comgr_status_t {
     Ok(())
 }
 
-fn compile_to_fatbin(ctx: &ActionContext) -> intel_comgr_status_t {
+fn compile_to_fatbin(ctx: &ActionContext) -> tt_comgr_status_t {
     // Find source files
     let source_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == intel_comgr_data_kind_s::INTEL_COMGR_DATA_KIND_SOURCE.0)
+        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_SOURCE.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if source_files.is_empty() {
         eprintln!("Error: No source files found for fatbin generation");
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Process each source file
@@ -1387,7 +1387,7 @@ fn compile_to_fatbin(ctx: &ActionContext) -> intel_comgr_status_t {
             }
             Err(e) => {
                 eprintln!("Error creating mock fatbin file: {}", e);
-                return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -1396,7 +1396,7 @@ fn compile_to_fatbin(ctx: &ActionContext) -> intel_comgr_status_t {
 }
 
 // Process MLIR files using ttmlir-opt and ttmlir-translate
-fn process_mlir_file(ctx: &ActionContext, input_file: &PathBuf) -> intel_comgr_status_t {
+fn process_mlir_file(ctx: &ActionContext, input_file: &PathBuf) -> tt_comgr_status_t {
     eprintln!("Processing MLIR file with TTMLIR tools: {}", input_file.display());
     
     let file_stem = input_file
@@ -1427,7 +1427,7 @@ fn process_mlir_file(ctx: &ActionContext, input_file: &PathBuf) -> intel_comgr_s
 }
 
 // Run ttmlir-opt with --ttir-to-emitc-pipeline
-fn run_ttmlir_opt(input_file: &PathBuf, output_file: &PathBuf, ctx: &ActionContext) -> intel_comgr_status_t {
+fn run_ttmlir_opt(input_file: &PathBuf, output_file: &PathBuf, ctx: &ActionContext) -> tt_comgr_status_t {
     eprintln!("Running ttmlir-opt --ttir-to-emitc-pipeline on {}", input_file.display());
     
     let mut cmd = Command::new("ttmlir-opt");
@@ -1449,7 +1449,7 @@ fn run_ttmlir_opt(input_file: &PathBuf, output_file: &PathBuf, ctx: &ActionConte
                 // Write the output to the intermediate file
                 if let Err(e) = fs::write(output_file, &output.stdout) {
                     eprintln!("Error writing ttmlir-opt output: {}", e);
-                    return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                    return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
                 }
                 
                 // Write stderr to log file for debugging
@@ -1490,7 +1490,7 @@ fn run_ttmlir_opt(input_file: &PathBuf, output_file: &PathBuf, ctx: &ActionConte
                     eprintln!("Warning: Could not write ttmlir-opt error log: {}", e);
                 }
                 
-                Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR)
+                Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
             }
         }
         Err(e) => {
@@ -1508,13 +1508,13 @@ fn run_ttmlir_opt(input_file: &PathBuf, output_file: &PathBuf, ctx: &ActionConte
                 eprintln!("Warning: Could not write ttmlir-opt execution error log: {}", e);
             }
             
-            Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR)
+            Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
         }
     }
 }
 
 // Run ttmlir-translate --mlir-to-cpp
-fn run_ttmlir_translate(input_file: &PathBuf, output_file: &PathBuf, ctx: &ActionContext) -> intel_comgr_status_t {
+fn run_ttmlir_translate(input_file: &PathBuf, output_file: &PathBuf, ctx: &ActionContext) -> tt_comgr_status_t {
     eprintln!("Running ttmlir-translate --mlir-to-cpp on {}", input_file.display());
     
     let mut cmd = Command::new("ttmlir-translate");
@@ -1536,7 +1536,7 @@ fn run_ttmlir_translate(input_file: &PathBuf, output_file: &PathBuf, ctx: &Actio
                 // Write the C++ output to the target file
                 if let Err(e) = fs::write(output_file, &output.stdout) {
                     eprintln!("Error writing ttmlir-translate output: {}", e);
-                    return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+                    return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
                 }
                 
                 // Write stderr to log file for debugging
@@ -1581,7 +1581,7 @@ fn run_ttmlir_translate(input_file: &PathBuf, output_file: &PathBuf, ctx: &Actio
                     eprintln!("Warning: Could not write ttmlir-translate error log: {}", e);
                 }
                 
-                Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR)
+                Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
             }
         }
         Err(e) => {
@@ -1600,13 +1600,13 @@ fn run_ttmlir_translate(input_file: &PathBuf, output_file: &PathBuf, ctx: &Actio
                 eprintln!("Warning: Could not write ttmlir-translate execution error log: {}", e);
             }
             
-            Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR)
+            Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
         }
     }
 }
 
 // Create mock MLIR output when real tools are not available
-fn create_mock_mlir_output(ctx: &ActionContext, input_file: &PathBuf) -> intel_comgr_status_t {
+fn create_mock_mlir_output(ctx: &ActionContext, input_file: &PathBuf) -> tt_comgr_status_t {
     eprintln!("Creating mock MLIR processing output as fallback");
     
     let file_stem = input_file
@@ -1632,7 +1632,7 @@ fn create_mock_mlir_output(ctx: &ActionContext, input_file: &PathBuf) -> intel_c
     
     if let Err(e) = fs::write(&intermediate_file, mock_emitc_content) {
         eprintln!("Error writing mock EmitC file: {}", e);
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
     }
     
     // Create mock C++ output file
@@ -1668,7 +1668,7 @@ fn create_mock_mlir_output(ctx: &ActionContext, input_file: &PathBuf) -> intel_c
     
     if let Err(e) = fs::write(&cpp_output_file, mock_cpp_content) {
         eprintln!("Error writing mock C++ file: {}", e);
-        return Err(intel_comgr_status_s::INTEL_COMGR_STATUS_ERROR);
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
     }
     
     // Create a detailed log explaining the mock processing

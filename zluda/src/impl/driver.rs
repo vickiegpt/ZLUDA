@@ -2,7 +2,7 @@ use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
 use std::{ffi::CString, sync::OnceLock};
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 use tt_runtime_sys::*;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
@@ -35,12 +35,12 @@ impl ResultExt for ze_result_t {
 }
 
 // Define trait for converting tt_runtime_sys results to CUresult
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 trait TTResultExt {
     fn to_cuda_result<T>(self, value: T) -> Result<T, CUerror>;
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 impl TTResultExt for Result<(), String> {
     fn to_cuda_result<T>(self, value: T) -> Result<T, CUerror> {
         match self {
@@ -214,14 +214,14 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
         .map_err(|e| *e)
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
     static GLOBAL_STATE: OnceLock<Result<GlobalState, CUerror>> = OnceLock::new();
 
     GLOBAL_STATE
         .get_or_init(|| {
             // Get device count using tt_runtime_sys
-            let device_count = match get_device_count() {
+            let device_count = match tt_runtime_sys::get_device_count() {
                 Ok(count) => count,
                 Err(_) => return Err(CUerror::NO_DEVICE),
             };
@@ -299,7 +299,7 @@ pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
     Ok(())
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
     // Tenstorrent initialization
     // The tt_runtime_sys doesn't require explicit initialization like CUDA/HIP
@@ -323,7 +323,7 @@ pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
     Ok(())
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
     // Return the CUDA version same as other implementations
     *version = cuda_types::cuda::CUDA_VERSION as i32;
@@ -341,7 +341,7 @@ pub(crate) fn device_ze(dev: ze_device_handle_t) -> Result<&'static Device, CUer
     })
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn device_tt(dev_id: i32) -> Result<&'static Device, CUerror> {
     TT_DEVICES.with(|map| {
         let map_ref = map.borrow();
@@ -357,7 +357,7 @@ thread_local! {
     static DEVICES_ZE: RefCell<HashMap<ze_device_handle_t, NonNull<Device>>> = RefCell::new(HashMap::new());
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 thread_local! {
     static TT_DEVICES: RefCell<HashMap<i32, NonNull<Device>>> = RefCell::new(HashMap::new());
 }

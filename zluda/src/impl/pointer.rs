@@ -314,3 +314,59 @@ pub(crate) unsafe fn get_pointer_attribute(
         _ => ZeResult(ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE).into(),
     }
 }
+
+// Tenstorrent pointer implementation
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) unsafe fn get_attribute(
+    data: *mut c_void,
+    attribute: CUpointer_attribute,
+    ptr: CUdeviceptr_v2,
+) -> CUresult {
+    if data == ptr::null_mut() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    // Get the current Tenstorrent context
+    let _tt_context = match super::context::get_current_tt() {
+        Ok(ctx) => ctx,
+        Err(e) => return Err(e),
+    };
+
+    match attribute {
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_CONTEXT => {
+            // For Tenstorrent, return the current context handle
+            // In a real implementation, this would query the context associated with the pointer
+            *(data.cast::<CUcontext>()) = super::context::get_current().unwrap_or(CUcontext(ptr::null_mut()));
+            Ok(())
+        }
+
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_MEMORY_TYPE => {
+            // For Tenstorrent, assume device memory
+            // In a real implementation, this would query the memory type from the runtime
+            *(data.cast::<CUmemorytype>()) = CUmemorytype::CU_MEMORYTYPE_DEVICE;
+            Ok(())
+        }
+
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_DEVICE_POINTER => {
+            // Return the device pointer as-is
+            *(data.cast::<CUdeviceptr_v2>()) = ptr;
+            Ok(())
+        }
+
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_HOST_POINTER => {
+            // For Tenstorrent, host pointers would need runtime query
+            // For now, return null as most allocations are device-only
+            *(data.cast::<*mut c_void>()) = ptr::null_mut();
+            Ok(())
+        }
+
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_IS_MANAGED => {
+            // Tenstorrent doesn't have managed memory in the CUDA sense
+            *(data.cast::<i32>()) = 0;
+            Ok(())
+        }
+
+        // For other attributes, return unsupported
+        _ => Err(CUerror::NOT_SUPPORTED),
+    }
+}

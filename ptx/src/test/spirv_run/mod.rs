@@ -10,10 +10,10 @@ use std::mem;
 use std::os::raw::c_void;
 use std::process::Command;
 use std::{ptr, str};
-#[cfg(feature = "intel")]
-use ze_runtime_sys::ze_result_t;
 #[cfg(feature = "tenstorrent")]
 use tt_runtime_sys::*;
+#[cfg(feature = "intel")]
+use ze_runtime_sys::ze_result_t;
 
 macro_rules! test_ptx {
     ($fn_name:ident, $input:expr, $output:expr) => {
@@ -734,10 +734,13 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     input: &[Input],
     output: &mut [Output],
 ) -> Result<Vec<Output>, String> {
-    eprintln!("TT TEST: Running with Tenstorrent Metal backend");
-    eprintln!("TT DEBUG: Kernel name: {:?}", name);
+    eprintln!("ZLUDA TEST: Running with Tenstorrent Metal backend");
+    eprintln!("ZLUDA DEBUG: Kernel name: {:?}", name);
 
+    use std::fs;
     use std::mem::size_of;
+    use std::path::Path;
+    use std::process::Command;
 
     // 创建结果向量
     let mut result = vec![Output::default(); output.len()];
@@ -745,55 +748,151 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     // 1. 初始化Tenstorrent设备
     let device = Device::new(0)?;
 
-    // 2. 创建程序
-    let program = device.create_program()?;
+    // 2. 获取kernel名称
+    let kernel_name = name.to_str().map_err(|e| e.to_string())?;
+    let core = tt_runtime_sys::CoreCoord { x: 0, y: 0 }; // 默认核心坐标
 
-    // 3. 将LLVM IR编译为Tenstorrent格式
-    // 获取LLVM IR并将其转换为C字符串
+    // 3. 将LLVM IR保存到临时文件
+    let temp_dir = std::env::temp_dir();
+    let llvm_ir_file = temp_dir.join(format!("{}_llvm.ll", kernel_name));
+    let mlir_file = temp_dir.join(format!("{}.mlir", kernel_name));
+    let cpp_file = temp_dir.join(format!("{}.cpp", kernel_name));
+
+    // 获取LLVM IR并保存到文件
     let llvm_ir = module
         .print_to_string()
         .map_err(|e| format!("Failed to print LLVM IR: {}", e))?;
 
-    program.load_from_llvm(&llvm_ir)?;
+    fs::write(&llvm_ir_file, &llvm_ir)
+        .map_err(|e| format!("Failed to write LLVM IR to file: {}", e))?;
 
-    // 4. 创建输入和输出缓冲区
+    // 4. 使用mlir-translate将LLVM IR转换为MLIR
+    let mlir_translate_status = Command::new("mlir-translate")
+        .args(&[
+            "--llvmir-to-mlir",
+            llvm_ir_file.to_str().unwrap(),
+            "-o",
+            mlir_file.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to execute mlir-translate: {}", e))?;
+
+    if !mlir_translate_status.success() {
+        return Err(format!(
+            "mlir-translate failed with status: {}",
+            mlir_translate_status
+        ));
+    }
+
+    // 5. 使用ttmlir-opt和ttmlir-translate将MLIR转换为C++
+    // 创建一个临时文件用于存储ttmlir-opt的输出
+    let ttmlir_opt_output = temp_dir.join(format!("{}_opt.mlir", kernel_name));
+
+    let ttmlir_opt_status = Command::new("ttmlir-opt")
+        .args(&[
+            "--ttir-to-emitc-pipeline",
+            mlir_file.to_str().unwrap(),
+            "-o",
+            ttmlir_opt_output.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to execute ttmlir-opt: {}", e))?;
+
+    if !ttmlir_opt_status.success() {
+        return Err(format!(
+            "ttmlir-opt failed with status: {}",
+            ttmlir_opt_status
+        ));
+    }
+
+    // 打开文件作为ttmlir-translate的输入
+    let ttmlir_opt_file = std::fs::File::open(&ttmlir_opt_output)
+        .map_err(|e| format!("Failed to open ttmlir-opt output: {}", e))?;
+
+    // 运行ttmlir-translate将MLIR转换为C++
+    let ttmlir_translate_status = std::process::Command::new("ttmlir-translate")
+        .arg("--mlir-to-cpp")
+        .stdin(ttmlir_opt_file)
+        .stdout(std::fs::File::create(&cpp_file).unwrap())
+        .status()
+        .map_err(|e| format!("Failed to execute ttmlir-translate: {}", e))?;
+
+    if !ttmlir_translate_status.success() {
+        return Err(format!(
+            "ttmlir-translate failed with status: {}",
+            ttmlir_translate_status
+        ));
+    }
+
+    eprintln!("ZLUDA DEBUG: Generated C++ file at {}", cpp_file.display());
+
+    // 6. 创建tt_metal程序
+    let program = device.create_program()?;
+
+    // 7. 创建kernel
+    let kernel_name = std::path::Path::new(cpp_file.file_name().unwrap())
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap();
+
+    let eltwise_unary_kernel = program
+        .create_kernel(kernel_name, core)
+        .map_err(|e| format!("Failed to create kernel: {}", e))?;
+
+    // 8. 创建输入和输出缓冲区
     let input_size = input.len() * size_of::<Input>();
     let output_size = output.len() * size_of::<Output>();
 
     let input_buffer = device.create_buffer(input_size as u64)?;
     let output_buffer = device.create_buffer(output_size as u64)?;
 
-    // 5. 将输入数据复制到输入缓冲区
+    // 9. 将输入数据复制到输入缓冲区
     input_buffer
         .write(unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u8, input_size) })?;
 
-    // 6. 创建内核和设置运行时参数
-    let kernel_name = name.to_str().map_err(|e| e.to_string())?;
-    let core = tt_runtime_sys::CoreCoord { x: 0, y: 0 }; // 默认核心坐标
-    let kernel = program.create_kernel(kernel_name, core)?;
-    
-    // 创建运行时参数（简化版，实际需要根据内核参数调整）
-    let args = vec![0u32; 4]; // 占位符参数
-    program.set_runtime_args(&kernel, core, &args)?;
+    // 10. 设置内核参数
+    // 创建一个u32数组作为参数列表
+    let mut kernel_args = vec![0u32; 2];
+    // 将Buffer指针地址存储在参数列表中
+    kernel_args[0] = input_buffer.get_address() as u32;
+    kernel_args[1] = output_buffer.get_address() as u32;
 
-    // 7. 执行程序
+    // 设置运行时参数
+    program.set_runtime_args(&eltwise_unary_kernel, core, &kernel_args)?;
+
+    // 11. 执行内核
     eprintln!(
-        "TT DEBUG: Launching kernel with {} inputs -> {} expected outputs",
+        "ZLUDA DEBUG: Launching kernel with {} inputs -> {} expected outputs",
         input.len(),
         output.len()
     );
 
     program.launch(&device)?;
 
-    // 8. 等待执行完成
+    // 12. 等待执行完成
     program.wait_for_completion()?;
 
-    // 9. 读取结果
+    // 13. 读取结果
     output_buffer.read(unsafe {
         std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u8, output_size)
     })?;
 
-    eprintln!("TT TEST: Tenstorrent kernel execution complete");
+    eprintln!("ZLUDA TEST: Tenstorrent kernel execution complete");
+
+    // 14. 清理临时文件
+    if Path::new(&llvm_ir_file).exists() {
+        let _ = fs::remove_file(&llvm_ir_file);
+    }
+    if Path::new(&mlir_file).exists() {
+        let _ = fs::remove_file(&mlir_file);
+    }
+    if Path::new(&cpp_file).exists() {
+        let _ = fs::remove_file(&cpp_file);
+    }
+    if Path::new(&ttmlir_opt_output).exists() {
+        let _ = fs::remove_file(&ttmlir_opt_output);
+    }
 
     Ok(result)
 }

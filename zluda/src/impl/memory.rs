@@ -412,12 +412,12 @@ fn execute_immediate_command_list(
 }
 
 // Tenstorrent implementations
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 use cuda_types::cuda::*;
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 use tt_runtime_sys::*;
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
     // Get the current TT context
     let tt_context = match context::get_current_tt() {
@@ -428,13 +428,13 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
     // For Tenstorrent, we'll simulate allocation by storing the size
     // In a real implementation, this would allocate device memory
     unsafe {
-        *dptr = CUdeviceptr(bytesize as *mut _);
+        *dptr = CUdeviceptr_v2(bytesize as *mut _);
     }
 
     Ok(())
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     // For Tenstorrent, memory is automatically managed
     // In a real implementation, this would free device memory
@@ -442,7 +442,7 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     Ok(())
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn copy_dto_h_v2(
     dst_host: *mut ::core::ffi::c_void,
     src_device: CUdeviceptr,
@@ -454,7 +454,7 @@ pub(crate) fn copy_dto_h_v2(
     Ok(())
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn copy_hto_d_v2(
     dst_device: CUdeviceptr,
     src_host: *const ::core::ffi::c_void,
@@ -466,7 +466,7 @@ pub(crate) fn copy_hto_d_v2(
     Ok(())
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn get_address_range_v2(
     base: *mut CUdeviceptr,
     size: *mut usize,
@@ -485,7 +485,7 @@ pub(crate) fn get_address_range_v2(
     Ok(())
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) -> CUresult {
     // For Tenstorrent, implement 32-bit memory set
     // In a real implementation, this would set device memory to the specified value
@@ -493,7 +493,7 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
     Ok(())
 }
 
-#[cfg(feature = "tenstorrent")]
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize) -> CUresult {
     // For Tenstorrent, implement 8-bit memory set
     // In a real implementation, this would set device memory to the specified value

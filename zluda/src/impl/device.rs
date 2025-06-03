@@ -1127,3 +1127,230 @@ impl ZeResultExt for ze_result_t {
         }
     }
 }
+
+// Tenstorrent device function implementations
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, _dev: i32) -> CUresult {
+    *major = COMPUTE_CAPABILITY_MAJOR;
+    *minor = COMPUTE_CAPABILITY_MINOR;
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get(device: *mut i32, ordinal: i32) -> CUresult {
+    let devices = super::driver::global_state()?;
+    if ordinal < 0 || ordinal >= devices.devices.len() as i32 {
+        return Err(CUerror::INVALID_DEVICE);
+    }
+    unsafe { *device = ordinal };
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get_attribute(
+    pi: *mut ::core::ffi::c_int,
+    attrib: CUdevice_attribute,
+    dev: i32,
+) -> CUresult {
+    if pi.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    
+    let devices = super::driver::global_state()?;
+    if dev < 0 || dev >= devices.devices.len() as i32 {
+        return Err(CUerror::INVALID_DEVICE);
+    }
+
+    let result = match attrib {
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK => 1024,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X => 1024,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y => 1024,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z => 64,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X => 65535,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y => 65535,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z => 65535,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK => 65536,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY => 65536,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_WARP_SIZE => 32,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_PITCH => 2147483647,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK => 65536,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CLOCK_RATE => 1000000,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT => 512,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT => 108,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT => 0,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_INTEGRATED => 0,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY => 1,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_MODE => 0,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE1D_WIDTH => 65536,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_WIDTH => 65536,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE2D_HEIGHT => 65536,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_WIDTH => 4096,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_HEIGHT => 4096,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAXIMUM_TEXTURE3D_DEPTH => 4096,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE => 1000000,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH => 256,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE => 1048576,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR => 2048,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT => 2,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_UNIFIED_ADDRESSING => 1,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR => COMPUTE_CAPABILITY_MAJOR,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR => COMPUTE_CAPABILITY_MINOR,
+        _ => return Err(CUerror::INVALID_VALUE),
+    };
+    
+    unsafe { *pi = result };
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> CUresult {
+    let devices = super::driver::global_state()?;
+    *count = devices.devices.len() as ::core::ffi::c_int;
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get_name(
+    name: *mut ::core::ffi::c_char,
+    len: ::core::ffi::c_int,
+    dev: i32,
+) -> CUresult {
+    if name.is_null() || len <= 0 {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    
+    let devices = super::driver::global_state()?;
+    if dev < 0 || dev >= devices.devices.len() as i32 {
+        return Err(CUerror::INVALID_DEVICE);
+    }
+
+    let device_name = b"Tenstorrent Device\0";
+    let copy_len = std::cmp::min(device_name.len(), len as usize - 1);
+    
+    unsafe {
+        std::ptr::copy_nonoverlapping(device_name.as_ptr() as *const i8, name, copy_len);
+        *name.add(copy_len) = 0;
+    }
+    
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get_uuid(uuid: *mut [u8; 16], dev: i32) -> CUresult {
+    if uuid.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    
+    let devices = super::driver::global_state()?;
+    if dev < 0 || dev >= devices.devices.len() as i32 {
+        return Err(CUerror::INVALID_DEVICE);
+    }
+
+    // Generate a deterministic UUID based on device ID
+    let mut device_uuid = [0u8; 16];
+    device_uuid[0..4].copy_from_slice(&(dev as u32).to_le_bytes());
+    device_uuid[4..8].copy_from_slice(b"TTTT"); // Tenstorrent marker
+    device_uuid[8..16].copy_from_slice(b"ZLUDA001"); // ZLUDA version
+    
+    unsafe { *uuid = device_uuid };
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get_uuid_v2(uuid: *mut [u8; 16], dev: i32) -> CUresult {
+    get_uuid(uuid, dev)
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get_luid(
+    luid: *mut [u8; 8],
+    device_node_mask: *mut ::core::ffi::c_uint,
+    dev: i32,
+) -> CUresult {
+    if luid.is_null() || device_node_mask.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    
+    let devices = super::driver::global_state()?;
+    if dev < 0 || dev >= devices.devices.len() as i32 {
+        return Err(CUerror::INVALID_DEVICE);
+    }
+
+    // Generate LUID based on device ID
+    let mut device_luid = [0u8; 8];
+    device_luid[0..4].copy_from_slice(&(dev as u32).to_le_bytes());
+    device_luid[4..8].copy_from_slice(b"TTTT");
+    
+    unsafe {
+        *luid = device_luid;
+        *device_node_mask = 1u32 << (dev as u32 % 32);
+    }
+    
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn total_mem_v2(bytes: *mut usize, dev: i32) -> CUresult {
+    if bytes.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    
+    let devices = super::driver::global_state()?;
+    if dev < 0 || dev >= devices.devices.len() as i32 {
+        return Err(CUerror::INVALID_DEVICE);
+    }
+
+    // Return 8GB as placeholder for Tenstorrent device memory
+    unsafe { *bytes = 8 * 1024 * 1024 * 1024 };
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn get_properties(prop: &mut CUdevprop, dev: i32) -> CUresult {
+    let devices = super::driver::global_state()?;
+    if dev < 0 || dev >= devices.devices.len() as i32 {
+        return Err(CUerror::INVALID_DEVICE);
+    }
+
+    prop.maxThreadsPerBlock = 1024;
+    prop.maxThreadsDim = [1024, 1024, 64];
+    prop.maxGridSize = [65535, 65535, 65535];
+    prop.sharedMemPerBlock = 65536;
+    prop.totalConstantMemory = 65536;
+    prop.SIMDWidth = 32;
+    prop.memPitch = 2147483647;
+    prop.regsPerBlock = 65536;
+    prop.clockRate = 1000;
+    prop.textureAlign = 512;
+    
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn primary_context_retain(
+    pctx: *mut CUcontext,
+    dev: i32,
+) -> CUresult {
+    if pctx.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    
+    let (primary_ctx, handle) = super::context::get_primary_tt(dev)?;
+    primary_ctx.increment_ref_count();
+    
+    unsafe { *pctx = handle };
+    Ok(())
+}
+
+#[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) fn primary_context_release(dev: i32) -> CUresult {
+    let (primary_ctx, _) = super::context::get_primary_tt(dev)?;
+    let ref_count = primary_ctx.decrement_ref_count();
+    
+    if ref_count == 0 {
+        // Clean up context when reference count reaches zero
+        primary_ctx.destroy()?;
+    }
+    
+    Ok(())
+}
