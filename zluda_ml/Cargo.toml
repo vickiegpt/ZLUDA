@@ -11,10 +11,10 @@ crate-type = ["cdylib"]
 [dependencies]
 cuda_base = { path = "../cuda_base" }
 cuda_types = { path = "../cuda_types" }
-ze_runtime_sys = { path = "../ext/ze_runtime-sys", optional = true }
+ze_runtime_sys = { path = "../ext/ze_runtime-sys" }
 
 [features]
 default = ["intel"]
-intel = ["ze_runtime_sys"]
+intel = []
 amd = []
 tenstorrent = []

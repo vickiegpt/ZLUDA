@@ -769,7 +769,7 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     // 4. 使用mlir-translate将LLVM IR转换为MLIR
     let mlir_translate_status = Command::new("mlir-translate")
         .args(&[
-            "--llvmir-to-mlir",
+            "--import-llvm",
             llvm_ir_file.to_str().unwrap(),
             "-o",
             mlir_file.to_str().unwrap(),
@@ -794,6 +794,7 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             mlir_file.to_str().unwrap(),
             "-o",
             ttmlir_opt_output.to_str().unwrap(),
+            "-allow-unregistered-dialect",
         ])
         .status()
         .map_err(|e| format!("Failed to execute ttmlir-opt: {}", e))?;

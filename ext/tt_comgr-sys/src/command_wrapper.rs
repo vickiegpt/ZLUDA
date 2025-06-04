@@ -1,4 +1,5 @@
 use lazy_static::lazy_static;
+use regex;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fs::{self, File};
@@ -1395,6 +1396,44 @@ fn compile_to_fatbin(ctx: &ActionContext) -> tt_comgr_status_t {
     Ok(())
 }
 
+// Preprocess MLIR to convert llvm.mlir.constant to arith.constant for ttmlir compatibility
+fn preprocess_mlir_constants(input_file: &PathBuf, output_file: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let content = fs::read_to_string(input_file)?;
+    
+    // Transform llvm.mlir.constant operations to arith.constant operations
+    // Pattern: %0 = llvm.mlir.constant(VALUE : TYPE) : TYPE
+    // Replace with: %0 = arith.constant VALUE : TYPE
+    let transformed_content = content
+        .lines()
+        .map(|line| {
+            if line.contains("llvm.mlir.constant") {
+                // Use regex to transform the pattern
+                // Match: %var = llvm.mlir.constant(value : type) : type
+                // Replace with: %var = arith.constant value : type
+                if let Some(captures) = regex::Regex::new(r"(\s*)(%\w+)\s*=\s*llvm\.mlir\.constant\(([^:]+)\s*:\s*([^)]+)\)\s*:\s*(.+)")
+                    .unwrap()
+                    .captures(line) {
+                    let indent = &captures[1];
+                    let var = &captures[2]; 
+                    let value = &captures[3];
+                    let type_name = &captures[5];
+                    format!("{}{}= arith.constant {} : {}", indent, var, value, type_name)
+                } else {
+                    line.to_string()
+                }
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    
+    fs::write(output_file, transformed_content)?;
+    eprintln!("Successfully preprocessed MLIR constants: {} -> {}", 
+              input_file.display(), output_file.display());
+    Ok(())
+}
+
 // Process MLIR files using ttmlir-opt and ttmlir-translate
 fn process_mlir_file(ctx: &ActionContext, input_file: &PathBuf) -> tt_comgr_status_t {
     eprintln!("Processing MLIR file with TTMLIR tools: {}", input_file.display());
@@ -1404,9 +1443,18 @@ fn process_mlir_file(ctx: &ActionContext, input_file: &PathBuf) -> tt_comgr_stat
         .and_then(|s| s.to_str())
         .unwrap_or("input");
     
+    // Preprocess MLIR to fix llvm.mlir.constant incompatibility
+    let preprocessed_file = ctx.temp_dir.join(format!("{}_preprocessed.mlir", file_stem));
+    let input_for_ttmlir = if let Err(e) = preprocess_mlir_constants(input_file, &preprocessed_file) {
+        eprintln!("Warning: MLIR preprocessing failed: {}, using original file", e);
+        input_file
+    } else {
+        &preprocessed_file
+    };
+    
     // Step 1: Use ttmlir-opt with --ttir-to-emitc-pipeline
     let intermediate_file = ctx.temp_dir.join(format!("{}_emitc.mlir", file_stem));
-    let result = run_ttmlir_opt(input_file, &intermediate_file, ctx);
+    let result = run_ttmlir_opt(input_for_ttmlir, &intermediate_file, ctx);
     
     if result.is_err() {
         eprintln!("Warning: ttmlir-opt failed, falling back to mock processing");

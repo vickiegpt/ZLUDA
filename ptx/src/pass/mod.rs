@@ -17,6 +17,7 @@ use strum_macros::EnumIter;
 mod debug_integration;
 mod deparamize_functions;
 pub(crate) mod emit_llvm;
+pub(crate) mod emit_linalg_mlir;
 mod expand_operands;
 mod fix_special_registers2;
 mod hoist_globals;
@@ -49,6 +50,49 @@ quick_error! {
         Unreachable {}
         Todo {}
     }
+}
+
+pub fn to_mlir_module<'input>(ast: ast::Module<'input>) -> Result<String, TranslateError> {
+    // Direct PTX to Linalg MLIR conversion
+    let mut flat_resolver = GlobalStringIdentResolver2::<'input>::new(SpirvWord(1));
+    let mut scoped_resolver = ScopedResolver::new(&mut flat_resolver);
+    eprintln!("ZLUDA DEBUG: Created scoped_resolver");
+    let sreg_map = SpecialRegistersMap2::new(&mut scoped_resolver)?;
+    eprintln!("ZLUDA DEBUG: Created sreg_map");
+    let directives = normalize_identifiers2::run(&mut scoped_resolver, ast.directives)?;
+    eprintln!("ZLUDA DEBUG: Completed normalize_identifiers2");
+    let directives = replace_known_functions::run(&flat_resolver, directives);
+    eprintln!("ZLUDA DEBUG: Completed replace_known_functions");
+    let directives = normalize_predicates2::run(&mut flat_resolver, directives)?;
+    eprintln!("ZLUDA DEBUG: Completed normalize_predicates2");
+    let directives = resolve_function_pointers::run(directives)?;
+    eprintln!("ZLUDA DEBUG: Completed resolve_function_pointers");
+    let directives: Vec<
+        Directive2<
+            '_,
+            ptx_parser::Instruction<ptx_parser::ParsedOperand<SpirvWord>>,
+            ptx_parser::ParsedOperand<SpirvWord>,
+        >,
+    > = fix_special_registers2::run(&mut flat_resolver, &sreg_map, directives)?;
+    eprintln!("ZLUDA DEBUG: Completed fix_special_registers2");
+    let directives = expand_operands::run(&mut flat_resolver, directives)?;
+    eprintln!("ZLUDA DEBUG: Completed expand_operands");
+    let directives = deparamize_functions::run(&mut flat_resolver, directives)?;
+    eprintln!("ZLUDA DEBUG: Completed deparamize_functions");
+    let directives = insert_explicit_load_store::run(&mut flat_resolver, directives)?;
+    eprintln!("ZLUDA DEBUG: Completed insert_explicit_load_store");
+    let directives = insert_implicit_conversions2::run(&mut flat_resolver, directives)?;
+    eprintln!("ZLUDA DEBUG: Completed insert_implicit_conversions2");
+    let directives = replace_instructions_with_function_calls::run(&mut flat_resolver, directives)?;
+    eprintln!("ZLUDA DEBUG: Completed replace_instructions_with_function_calls");
+    let directives = hoist_globals::run(directives)?;
+    eprintln!("ZLUDA DEBUG: Completed hoist_globals");
+    
+    // Convert directly to Linalg MLIR
+    let mlir_code = emit_linalg_mlir::run(flat_resolver, directives)?;
+    eprintln!("ZLUDA DEBUG: Completed emit_linalg_mlir");
+    
+    Ok(mlir_code)
 }
 
 pub fn to_llvm_module<'input>(ast: ast::Module<'input>) -> Result<Module, TranslateError> {

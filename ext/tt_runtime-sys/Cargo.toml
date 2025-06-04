@@ -2,7 +2,10 @@
 name = "tt_runtime_sys"
 version = "0.0.0"
 authors = ["Yiwei Yang <victoryang00@ucsc.edu>"]
-edition = "2024"
+edition = "2021"
 links = "tenstorrent"
 
 [lib]
+
+[build-dependencies]
+cc = "1.0"

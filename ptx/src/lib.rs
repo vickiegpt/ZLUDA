@@ -1,13 +1,13 @@
 #![feature(str_from_raw_parts)]
 
 pub mod debug;
-pub(crate) mod pass;
+pub mod pass;
 pub mod state_recovery;
 #[cfg(test)]
 mod test;
 
 pub use crate::pass::{Module, TranslateError};
-pub use pass::to_llvm_module;
+pub use pass::{to_llvm_module, to_mlir_module};
 
 // Implementation for PTX to LLVM IR conversion
 pub fn ptx_to_llvm(ast: ptx_parser::Module) -> Result<Module, TranslateError> {

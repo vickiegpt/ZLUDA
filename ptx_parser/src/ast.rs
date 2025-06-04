@@ -875,6 +875,15 @@ impl Type {
             Type::Pointer(..) => Layout::new::<usize>(),
         }
     }
+
+    pub fn scalar_type(&self) -> ScalarType {
+        match self {
+            Type::Scalar(scalar_type) => *scalar_type,
+            Type::Vector(_, scalar_type) => *scalar_type,
+            Type::Array(_, scalar_type, _) => *scalar_type,
+            Type::Pointer(scalar_type, _) => *scalar_type,
+        }
+    }
 }
 
 impl ScalarType {
