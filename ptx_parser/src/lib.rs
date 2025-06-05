@@ -1698,7 +1698,7 @@ derive_parser!(
         DotFile
     }
 
-    #[derive(Copy, Clone, PartialEq, Eq, Hash)]
+    #[derive(Copy, Debug, Clone, PartialEq, Eq, Hash)]
     pub enum StateSpace {
         Reg,
         Generic,

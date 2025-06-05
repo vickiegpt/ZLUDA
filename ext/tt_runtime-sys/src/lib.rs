@@ -182,11 +182,10 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn tt_metal_SetRuntimeArgs(
         program: *mut tt_Program,
-        kernel: *mut tt_Kernel,
-        core: CoreCoord,
-        args: *const u32,
-        args_count: usize,
-    );
+        kernel_name: *const ::core::ffi::c_char,
+        args: *const *const tt_Buffer,
+        num_args: i32,
+    ) -> tt_Result;
 }
 
 unsafe extern "C" {
@@ -644,14 +643,29 @@ impl Program {
 
     pub fn set_runtime_args(
         &self,
-        kernel: &Kernel,
-        core: CoreCoord,
-        args: &[u32],
+        kernel_name: &str,
+        buffers: &[&Buffer],
     ) -> Result<(), String> {
-        unsafe {
-            tt_metal_SetRuntimeArgs(self.handle, kernel.handle, core, args.as_ptr(), args.len())
+        let kernel_name_cstr = std::ffi::CString::new(kernel_name)
+            .map_err(|e| format!("Invalid kernel name: {}", e))?;
+        
+        // Convert buffer references to buffer pointers
+        let buffer_ptrs: Vec<*const tt_Buffer> = buffers.iter().map(|b| b.handle as *const tt_Buffer).collect();
+        
+        let result = unsafe {
+            tt_metal_SetRuntimeArgs(
+                self.handle,
+                kernel_name_cstr.as_ptr(),
+                buffer_ptrs.as_ptr(),
+                buffer_ptrs.len() as i32,
+            )
         };
-        Ok(())
+        
+        if result == tt_Result_tt_Result_Success {
+            Ok(())
+        } else {
+            Err(format!("Failed to set runtime args: error code {:?}", result))
+        }
     }
 
     pub fn launch(&self, device: &Device) -> Result<(), String> {

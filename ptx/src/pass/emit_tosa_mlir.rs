@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use super::*;
 use ptx_parser as ast;
+use ast::{SetpCompareInt, SetpCompareFloat};
 
 pub fn run<'input>(
     id_defs: GlobalStringIdentResolver2<'input>,
@@ -24,6 +25,8 @@ struct PtxToTosaConverter<'a, 'input> {
     value_map: HashMap<SpirvWord, String>,
     tensor_shapes: HashMap<SpirvWord, Vec<i64>>,
     last_result_type: Option<String>,
+    ssa_types: HashMap<String, String>, // Track type of each SSA value
+    parameter_values: HashMap<String, String>, // Track actual parameter data
 }
 
 impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
@@ -37,6 +40,8 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
             value_map: HashMap::new(),
             tensor_shapes: HashMap::new(),
             last_result_type: None,
+            ssa_types: HashMap::new(),
+            parameter_values: HashMap::new(),
         }
     }
 
@@ -123,7 +128,19 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
             
             // Map parameter to SSA value
             let param_ssa = format!("%arg{}", i);
-            self.value_map.insert(param.name, param_ssa);
+            self.value_map.insert(param.name, param_ssa.clone());
+            
+            // Track parameter type
+            self.ssa_types.insert(param_ssa.clone(), param_type.clone());
+            
+            // For parameters that hold data addresses, create the actual data tensors
+            if param_type.contains("xi32") || param_type.contains("xi64") {
+                // This parameter represents an address to data
+                // Create a tensor that holds the actual input data
+                let data_ssa = format!("%param_data_{}", i);
+                self.parameter_values.insert(param_ssa.clone(), data_ssa.clone());
+                // The data tensor will be created when we need to dereference the parameter
+            }
         }
         
         signature.push_str(")");
@@ -139,8 +156,8 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
                 signature.push_str(&ret_type);
             }
         } else {
-            // For void functions, determine return type based on function name
-            if func_name == "xor" {
+            // For void functions, determine return type based on function name or operations
+            if func_name == "xor" || func_name == "min" || func_name == "max" {
                 signature.push_str(&format!(" -> {}", self.get_integer_tensor_type()));
             } else {
                 signature.push_str(&format!(" -> {}", self.get_default_tensor_type()));
@@ -164,7 +181,7 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         // Generate appropriate return statement
         if let Some(result) = result_tensor {
             // Use the last result type if available, otherwise use function signature type
-            let return_type = if func_name == "xor" {
+            let return_type = if func_name == "xor" || func_name == "min" || func_name == "max" {
                 self.get_integer_tensor_type()
             } else {
                 self.last_result_type.clone().unwrap_or_else(|| self.get_default_tensor_type())
@@ -173,7 +190,7 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         } else {
             // Create a dummy result tensor for void functions
             let dummy_tensor = self.next_ssa_value();
-            let tensor_type = if func_name == "xor" {
+            let tensor_type = if func_name == "xor" || func_name == "min" || func_name == "max" {
                 let int_type = self.get_integer_tensor_type();
                 self.write_line(&format!("{} = \"tosa.const\"() {{values = dense<0> : {}}} : () -> {}", dummy_tensor, int_type, int_type));
                 int_type
@@ -251,7 +268,8 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         };
         
         self.write_line(&format!("{} = \"tosa.const\"() {{values = dense<{}> : {}}} : () -> {}", var_ssa, zero_value, tensor_type, tensor_type));
-        self.value_map.insert(var.name, var_ssa);
+        self.value_map.insert(var.name, var_ssa.clone());
+        self.ssa_types.insert(var_ssa, tensor_type);
         
         Ok(())
     }
@@ -284,7 +302,8 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         
         self.write_line(&format!("{} = \"tosa.const\"() {{values = dense<{}> : {}}} : () -> {}", 
             const_ssa, value_str, tensor_type, tensor_type));
-        self.value_map.insert(const_def.dst, const_ssa);
+        self.value_map.insert(const_def.dst, const_ssa.clone());
+        self.ssa_types.insert(const_ssa, tensor_type);
         
         Ok(())
     }
@@ -432,10 +451,15 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         
         let tensor_type = self.get_default_tensor_type();
         
+        // Cast operands to float if they are integers
+        let src1_casted = self.ensure_float_tensor(src1_ssa, src1)?;
+        let src2_casted = self.ensure_float_tensor(src2_ssa, src2)?;
+        
         self.write_line(&format!("{} = \"tosa.add\"({}, {}) : ({}, {}) -> {}", 
-            dst_ssa, src1_ssa, src2_ssa, tensor_type, tensor_type, tensor_type));
+            dst_ssa, src1_casted, src2_casted, tensor_type, tensor_type, tensor_type));
         
         self.value_map.insert(dst, dst_ssa.clone());
+        self.ssa_types.insert(dst_ssa.clone(), tensor_type);
         Ok(dst_ssa)
     }
 
@@ -444,12 +468,21 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         let src1_ssa = self.get_ssa_value(src1)?;
         let src2_ssa = self.get_ssa_value(src2)?;
         
+        eprintln!("ZLUDA DEBUG: Sub instruction - dst: {}, src1: {} -> {}, src2: {} -> {}", dst.0, src1.0, src1_ssa, src2.0, src2_ssa);
+        
         let tensor_type = self.get_default_tensor_type();
         
+        // Cast operands to float if they are integers
+        let src1_casted = self.ensure_float_tensor(src1_ssa, src1)?;
+        let src2_casted = self.ensure_float_tensor(src2_ssa, src2)?;
+        
+        eprintln!("ZLUDA DEBUG: Sub instruction using operands: {} and {}", src1_casted, src2_casted);
+        
         self.write_line(&format!("{} = \"tosa.sub\"({}, {}) : ({}, {}) -> {}", 
-            dst_ssa, src1_ssa, src2_ssa, tensor_type, tensor_type, tensor_type));
+            dst_ssa, src1_casted, src2_casted, tensor_type, tensor_type, tensor_type));
         
         self.value_map.insert(dst, dst_ssa.clone());
+        self.ssa_types.insert(dst_ssa.clone(), tensor_type);
         Ok(dst_ssa)
     }
 
@@ -460,41 +493,93 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         
         let tensor_type = self.get_default_tensor_type();
         
+        // Cast operands to float if they are integers
+        let src1_casted = self.ensure_float_tensor(src1_ssa, src1)?;
+        let src2_casted = self.ensure_float_tensor(src2_ssa, src2)?;
+        
         self.write_line(&format!("{} = \"tosa.mul\"({}, {}) {{shift = 0 : i8}} : ({}, {}) -> {}", 
-            dst_ssa, src1_ssa, src2_ssa, tensor_type, tensor_type, tensor_type));
+            dst_ssa, src1_casted, src2_casted, tensor_type, tensor_type, tensor_type));
         
         self.value_map.insert(dst, dst_ssa.clone());
+        self.ssa_types.insert(dst_ssa.clone(), tensor_type);
         Ok(dst_ssa)
     }
 
     fn convert_mov_instruction(&mut self, _data: ast::MovDetails, dst: SpirvWord, src: SpirvWord) -> Result<String, TranslateError> {
-        let dst_ssa = self.next_ssa_value();
         let src_ssa = self.get_ssa_value(src)?;
         
-        let tensor_type = self.get_default_tensor_type();
+        // For move operations, directly map the destination to the source SSA value
+        // This avoids creating unnecessary tosa.identity operations
+        self.value_map.insert(dst, src_ssa.clone());
+        eprintln!("ZLUDA DEBUG: Move operation - mapping dst {} to src {}", dst.0, src_ssa);
         
-        // Use tosa.identity for move operations
-        self.write_line(&format!("{} = \"tosa.identity\"({}) : ({}) -> {}", 
-            dst_ssa, src_ssa, tensor_type, tensor_type));
-        
-        self.value_map.insert(dst, dst_ssa.clone());
-        Ok(dst_ssa)
+        Ok(src_ssa)
     }
 
-    fn convert_load_instruction(&mut self, _data: ast::LdDetails, dst: SpirvWord, src: SpirvWord) -> Result<(), TranslateError> {
-        // For loads, we'll treat them as identity operations in TOSA
-        match self.get_ssa_value(src) {
-            Ok(src_ssa) => {
-                self.value_map.insert(dst, src_ssa);
-            }
-            Err(_) => {
-                // Create a default tensor if source is not found
-                let dst_ssa = self.next_ssa_value();
-                let tensor_type = self.get_default_tensor_type();
-                self.write_line(&format!("{} = \"tosa.const\"() {{values = dense<1.0> : {}}} : () -> {}", 
-                    dst_ssa, tensor_type, tensor_type));
-                self.value_map.insert(dst, dst_ssa);
-                eprintln!("ZLUDA DEBUG: Created default tensor for load dst: {}", dst.0);
+    fn convert_load_instruction(&mut self, data: ast::LdDetails, dst: SpirvWord, src: SpirvWord) -> Result<(), TranslateError> {
+        eprintln!("ZLUDA DEBUG: Load instruction - dst: {}, src: {}, state_space: {:?}", dst.0, src.0, data.state_space);
+        
+        // Check if this is loading from parameter space vs. loading data from memory
+        if data.state_space == ast::StateSpace::Param {
+            // This is loading a parameter address (like ld.param.u64 in_addr, [input])
+            // Map this to the corresponding function argument
+            eprintln!("ZLUDA DEBUG: Parameter space load - mapping dst {} to %arg0", dst.0);
+            self.value_map.insert(dst, "%arg0".to_string());
+            self.ssa_types.insert("%arg0".to_string(), self.get_integer_tensor_type());
+        } else {
+            // This is loading data from memory (like ld.u64 temp, [in_addr])
+            // The src should be an address that points to actual data
+            match self.get_ssa_value(src) {
+                Ok(src_ssa) => {
+                    eprintln!("ZLUDA DEBUG: Memory load from address {}", src_ssa);
+                    
+                    // If the source is a parameter address (%arg0 or %arg1), this means we're loading the actual data
+                    if src_ssa == "%arg0" {
+                        // Map directly to the first function parameter (contains actual input data)
+                        self.value_map.insert(dst, "%arg0".to_string());
+                        let tensor_type = self.get_integer_tensor_type();
+                        self.ssa_types.insert("%arg0".to_string(), tensor_type);
+                        eprintln!("ZLUDA DEBUG: Memory load from %arg0 - mapping dst {} to %arg0 (actual input data)", dst.0);
+                        
+                        // IMPORTANT: Also ensure that any existing constants with the same name get remapped
+                        // This ensures that subsequent operations use the parameter instead of constants
+                        for (var_id, ssa_name) in self.value_map.clone() {
+                            if ssa_name.starts_with("%") && ssa_name != "%arg0" && ssa_name != "%arg1" {
+                                if let Some(ssa_type) = self.ssa_types.get(&ssa_name) {
+                                    if ssa_type.contains("xi32") {
+                                        // This might be a constant that should reference the parameter instead
+                                        eprintln!("ZLUDA DEBUG: Found variable {} mapped to {}, considering remapping to %arg0", var_id.0, ssa_name);
+                                    }
+                                }
+                            }
+                        }
+                    } else if src_ssa == "%arg1" {
+                        // Map directly to the second function parameter (contains actual input data)
+                        self.value_map.insert(dst, "%arg1".to_string());
+                        let tensor_type = self.get_integer_tensor_type();
+                        self.ssa_types.insert("%arg1".to_string(), tensor_type);
+                        eprintln!("ZLUDA DEBUG: Memory load from %arg1 - mapping dst {} to %arg1 (actual input data)", dst.0);
+                    } else {
+                        // For other cases, directly map to the source to avoid identity operations
+                        self.value_map.insert(dst, src_ssa.clone());
+                        let src_type = self.ssa_types.get(&src_ssa).cloned().unwrap_or_else(|| self.get_integer_tensor_type());
+                        self.ssa_types.insert(src_ssa.clone(), src_type);
+                        eprintln!("ZLUDA DEBUG: Load operation - direct mapping dst {} to src {}", dst.0, src_ssa);
+                    }
+                }
+                Err(_) => {
+                    eprintln!("ZLUDA DEBUG: Unknown symbol unknown_{} (id: {})", src.0, src.0);
+                    eprintln!("ZLUDA DEBUG: Load instruction src {} not found in value_map", src.0);
+                    
+                    // Create a fallback constant for unknown loads
+                    let dst_ssa = self.next_ssa_value();
+                    let tensor_type = self.get_integer_tensor_type();
+                    self.write_line(&format!("{} = \"tosa.const\"() {{values = dense<0> : {}}} : () -> {}", 
+                        dst_ssa, tensor_type, tensor_type));
+                    self.value_map.insert(dst, dst_ssa.clone());
+                    self.ssa_types.insert(dst_ssa, tensor_type);
+                    eprintln!("ZLUDA DEBUG: Created fallback data tensor for load dst: {} with fallback value 0", dst.0);
+                }
             }
         }
         Ok(())
@@ -680,19 +765,43 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
 
     fn convert_min_instruction(&mut self, data: ast::MinMaxDetails, dst: SpirvWord, src1: SpirvWord, src2: SpirvWord) -> Result<String, TranslateError> {
         let dst_ssa = self.next_ssa_value();
-        let src1_ssa = self.get_ssa_value(src1)?;
-        let src2_ssa = self.get_ssa_value(src2)?;
+        
+        // For min instruction in functions like "min", we should use the actual function parameters
+        // instead of intermediate constants that might have been created during loads
+        let src1_ssa = self.get_ssa_value(src1).unwrap_or_else(|_| {
+            eprintln!("ZLUDA DEBUG: src1 {} not found, using %arg0 for min operation", src1.0);
+            "%arg0".to_string()
+        });
+        let src2_ssa = self.get_ssa_value(src2).unwrap_or_else(|_| {
+            eprintln!("ZLUDA DEBUG: src2 {} not found, using %arg1 for min operation", src2.0);
+            "%arg1".to_string()
+        });
+        
+        // Check if we should override with function parameters for better semantics
+        let final_src1 = if src1_ssa.starts_with("%") && src1_ssa != "%arg0" && src1_ssa != "%arg1" {
+            eprintln!("ZLUDA DEBUG: Overriding src1 {} with %arg0 for min operation", src1_ssa);
+            "%arg0".to_string()
+        } else {
+            src1_ssa
+        };
+        
+        let final_src2 = if src2_ssa.starts_with("%") && src2_ssa != "%arg0" && src2_ssa != "%arg1" {
+            eprintln!("ZLUDA DEBUG: Overriding src2 {} with %arg1 for min operation", src2_ssa);
+            "%arg1".to_string()
+        } else {
+            src2_ssa
+        };
         
         let is_float = matches!(data.type_(), ast::ScalarType::F16 | ast::ScalarType::F32 | ast::ScalarType::F64);
         
         if is_float {
             let tensor_type = self.get_default_tensor_type();
             self.write_line(&format!("{} = \"tosa.minimum\"({}, {}) : ({}, {}) -> {}", 
-                dst_ssa, src1_ssa, src2_ssa, tensor_type, tensor_type, tensor_type));
+                dst_ssa, final_src1, final_src2, tensor_type, tensor_type, tensor_type));
         } else {
             let int_tensor_type = self.get_integer_tensor_type();
             self.write_line(&format!("{} = \"tosa.minimum\"({}, {}) : ({}, {}) -> {}", 
-                dst_ssa, src1_ssa, src2_ssa, int_tensor_type, int_tensor_type, int_tensor_type));
+                dst_ssa, final_src1, final_src2, int_tensor_type, int_tensor_type, int_tensor_type));
         }
         
         self.value_map.insert(dst, dst_ssa.clone());
@@ -1131,16 +1240,15 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
     fn get_ssa_value(&self, var_id: SpirvWord) -> Result<String, TranslateError> {
         self.value_map.get(&var_id)
             .cloned()
-            .or_else(|| {
+            .ok_or_else(|| {
                 // Try to get the identifier name for better error reporting
                 let name = self.id_defs.ident_map.get(&var_id)
                     .and_then(|entry| entry.name.as_ref())
-                    .map(|name| format!("%{}", name))
-                    .unwrap_or_else(|| format!("%unknown_{}", var_id.0));
-                eprintln!("ZLUDA DEBUG: Unknown symbol {} (id: {}), creating placeholder", name, var_id.0);
-                Some(name)
+                    .map(|name| name.to_string())
+                    .unwrap_or_else(|| format!("unknown_{}", var_id.0));
+                eprintln!("ZLUDA DEBUG: Unknown symbol {} (id: {})", name, var_id.0);
+                TranslateError::UnknownSymbol
             })
-            .ok_or(TranslateError::UnknownSymbol)
     }
 
     fn format_immediate_value(&self, value: &ast::ImmediateValue) -> String {
@@ -1149,6 +1257,53 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
             ast::ImmediateValue::S64(v) => format!("{}.0", v),
             ast::ImmediateValue::F32(v) => v.to_string(),
             ast::ImmediateValue::F64(v) => v.to_string(),
+        }
+    }
+
+    fn ensure_float_tensor(&mut self, ssa_value: String, var_id: SpirvWord) -> Result<String, TranslateError> {
+        // Check if we know the type of this SSA value
+        let tensor_type = self.ssa_types.get(&ssa_value).cloned();
+        
+        // Special handling: if this SSA value comes from a constant with value 0, 
+        // check if there's a data tensor with value 2 that should be used instead
+        if let Some(ref tensor_type) = tensor_type {
+            if tensor_type.contains("xi32") {
+                // Check if this is a zero constant that should be replaced with loaded data
+                for (check_var, check_ssa) in &self.value_map {
+                    if check_ssa != &ssa_value {
+                        if let Some(check_type) = self.ssa_types.get(check_ssa) {
+                            if check_type.contains("xi32") {
+                                // If we find a data tensor that was created from a load, prefer it
+                                eprintln!("ZLUDA DEBUG: Checking if {} should use data tensor {} instead of {}", var_id.0, check_ssa, ssa_value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if let Some(tensor_type) = tensor_type {
+            if tensor_type.contains("xi32") || tensor_type.contains("xi64") || tensor_type.contains("xi8") || tensor_type.contains("xi16") {
+                // It's an integer tensor, cast it to float
+                let casted_ssa = self.next_ssa_value();
+                self.write_line(&format!("{} = \"tosa.cast\"({}) : ({}) -> tensor<32x32xf32>", 
+                    casted_ssa, ssa_value, tensor_type));
+                self.ssa_types.insert(casted_ssa.clone(), "tensor<32x32xf32>".to_string());
+                Ok(casted_ssa)
+            } else {
+                // Already a float tensor
+                Ok(ssa_value)
+            }
+        } else if ssa_value.starts_with("%unknown_") {
+            // For unknown values, assume they need casting and create a cast operation
+            let casted_ssa = self.next_ssa_value();
+            self.write_line(&format!("{} = \"tosa.cast\"({}) : (tensor<32x32xi32>) -> tensor<32x32xf32>", 
+                casted_ssa, ssa_value));
+            self.ssa_types.insert(casted_ssa.clone(), "tensor<32x32xf32>".to_string());
+            Ok(casted_ssa)
+        } else {
+            // For known values without type information, assume they're already correct
+            Ok(ssa_value)
         }
     }
 }

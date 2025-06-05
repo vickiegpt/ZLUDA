@@ -922,14 +922,11 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
         .write(unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u8, input_size) })?;
 
     // 10. 设置内核参数
-    // 创建一个u32数组作为参数列表
-    let mut kernel_args = vec![0u32; 2];
-    // 将Buffer指针地址存储在参数列表中
-    kernel_args[0] = input_buffer.get_address() as u32;
-    kernel_args[1] = output_buffer.get_address() as u32;
+    // 创建缓冲区数组
+    let buffers = [&input_buffer, &output_buffer];
 
     // 设置运行时参数
-    program.set_runtime_args(&eltwise_unary_kernel, core, &kernel_args)?;
+    program.set_runtime_args(kernel_name, &buffers)?;
 
     // 11. 执行内核
     eprintln!(
@@ -937,7 +934,6 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
         input.len(),
         output.len()
     );
-
     program.launch(&device)?;
 
     // 12. 等待执行完成

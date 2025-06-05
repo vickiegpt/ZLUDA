@@ -150,6 +150,9 @@ tt_Result tt_metal_LightMetalEndCapture(tt_Device *device);
 tt_Result tt_metal_DumpDeviceProfileResults(tt_Device *device, const char *output_file);
 tt_Result tt_metal_GetCompileTimeArgValue(tt_Program *program, const char *kernel_name, const char *arg_name, void *value, size_t value_size);
 
+// Additional debugging function
+tt_Result tt_metal_GetKernelInfo(tt_Kernel *kernel, char *info_buffer, size_t buffer_size);
+
 #ifdef __cplusplus
 }
 #endif
