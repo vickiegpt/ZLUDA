@@ -813,14 +813,6 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     let mlir_file = temp_dir.join(format!("{}.mlir", kernel_name));
     let cpp_file = temp_dir.join(format!("{}.cpp", kernel_name));
 
-    // 获取LLVM IR并保存到文件
-    let llvm_ir = module
-        .print_to_string()
-        .map_err(|e| format!("Failed to print LLVM IR: {}", e))?;
-
-    fs::write(&llvm_ir_file, &llvm_ir)
-        .map_err(|e| format!("Failed to write LLVM IR to file: {}", e))?;
-
     // 4. 生成TOSA MLIR代码，使用真实的PTX源代码
     let tosa_mlir = generate_tosa_mlir_from_ptx(kernel_name, ptx_text, input.len(), output.len())?;
     

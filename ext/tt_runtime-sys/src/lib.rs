@@ -202,16 +202,16 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn tt_metal_WriteToBuffer(
         buffer: *mut tt_Buffer,
-        data: *const u32,
-        size: usize,
+        data: *const core::ffi::c_void,
+        size: u64,
     ) -> tt_Result;
 }
 
 unsafe extern "C" {
     pub fn tt_metal_ReadFromBuffer(
         buffer: *mut tt_Buffer,
-        data: *mut u32,
-        size: usize,
+        data: *mut core::ffi::c_void,
+        size: u64,
     ) -> tt_Result;
 }
 
@@ -701,7 +701,7 @@ impl Drop for Program {
 impl Buffer {
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
         let result =
-            unsafe { tt_metal_WriteToBuffer(self.handle, data.as_ptr() as *const u32, data.len()) };
+            unsafe { tt_metal_WriteToBuffer(self.handle, data.as_ptr() as *const core::ffi::c_void, data.len() as u64) };
 
         if result == tt_Result_tt_Result_Success {
             Ok(())
@@ -715,7 +715,7 @@ impl Buffer {
 
     pub fn read(&self, data: &mut [u8]) -> Result<(), String> {
         let result = unsafe {
-            tt_metal_ReadFromBuffer(self.handle, data.as_mut_ptr() as *mut u32, data.len())
+            tt_metal_ReadFromBuffer(self.handle, data.as_mut_ptr() as *mut core::ffi::c_void, data.len() as u64)
         };
 
         if result == tt_Result_tt_Result_Success {

@@ -51,11 +51,11 @@ typedef enum {
     tt_EventStatus_Error
 } tt_EventStatus;
 
-// Core coordinate
+// Core coordinate (renamed to avoid conflict with TT Metal's CoreCoord)
 typedef struct {
     uint32_t x;
     uint32_t y;
-} CoreCoord;
+} tt_CoreCoord;
 
 // Circular buffer config
 typedef struct {
@@ -75,7 +75,7 @@ tt_Device *tt_metal_CreateDevice(int device_id);
 tt_Result tt_metal_CloseDevice(tt_Device *device);
 
 // Program APIs
-tt_Program *tt_metal_CreateProgram(tt_Device *device);
+tt_Program *tt_metal_CreateProgram();
 tt_Result tt_metal_DestroyProgram(tt_Program *program);
 tt_Result tt_metal_LoadFromLLVM(tt_Program *program, const char *llvm_ir);
 tt_Result tt_metal_CompileProgram(tt_Program *program, const char *options);
@@ -93,7 +93,7 @@ tt_Result tt_metal_WriteToBufferOffset(tt_Buffer *buffer, const void *data, uint
 tt_Result tt_metal_ReadFromBufferOffset(tt_Buffer *buffer, void *data, uint64_t offset, uint64_t size);
 
 // Kernel APIs
-tt_Kernel *tt_metal_CreateKernel(tt_Program *program, const char *kernel_file, CoreCoord core, const tt_DataMovementConfig *config);
+tt_Kernel *tt_metal_CreateKernel(tt_Program *program, const char *kernel_file, tt_CoreCoord core, const tt_DataMovementConfig *config);
 tt_Kernel *tt_metal_CreateKernelFromString(tt_Program *program, const char *kernel_source, const char *kernel_name);
 tt_Result tt_metal_DestroyKernel(tt_Kernel *kernel);
 tt_Result tt_metal_SetRuntimeArgs(tt_Program *program, const char *kernel_name, const tt_Buffer **args, int32_t num_args);
@@ -103,7 +103,7 @@ tt_CommandQueue *tt_metal_CreateCommandQueue(tt_Device *device);
 tt_Result tt_metal_DestroyCommandQueue(tt_CommandQueue *command_queue);
 
 // Execution APIs
-tt_Result tt_metal_LaunchProgram(tt_Program *program);
+tt_Result tt_metal_LaunchProgram(tt_Device *device, tt_Program *program);
 tt_Result tt_metal_WaitForCompletion(tt_Program *program);
 tt_Result tt_metal_Synchronize(tt_Device *device);
 
@@ -122,7 +122,7 @@ tt_EventStatus tt_metal_EventQuery(tt_Event *event);
 tt_Result tt_metal_EventSynchronize(tt_Event *event);
 
 // Circular Buffer APIs
-tt_CircularBuffer *tt_metal_CreateCircularBuffer(tt_Program *program, CoreCoord core, const tt_CircularBufferConfig *config);
+tt_CircularBuffer *tt_metal_CreateCircularBuffer(tt_Program *program, tt_CoreCoord core, const tt_CircularBufferConfig *config);
 tt_Result tt_metal_DestroyCircularBuffer(tt_CircularBuffer *circular_buffer);
 uint32_t tt_metal_CircularBufferPagesAvailableAtFront(tt_CircularBuffer *circular_buffer);
 tt_Result tt_metal_CircularBufferWaitFront(tt_CircularBuffer *circular_buffer, uint32_t min_pages);
