@@ -619,13 +619,22 @@ impl Program {
     }
 
     pub fn create_kernel(&self, kernel_name: &str, core: CoreCoord) -> Result<Kernel, String> {
+        eprintln!("ZLUDA DEBUG: Program::create_kernel called with kernel_name={}, core=({},{})", kernel_name, core.x, core.y);
+        
         let kernel_name = CString::new(kernel_name).map_err(|e| e.to_string())?;
         let config = tt_DataMovementConfig {
             processor: 0, // tt_DataMovementProcessor_tt_DataMovementProcessor_RISCV_0
             noc: 0,       // tt_NOC_tt_NOC_RISCV_0_default
         };
+        
+        eprintln!("ZLUDA DEBUG: About to call tt_metal_CreateKernel with program={:p}, kernel_name={:?}, core=({},{}), config=({},{})", 
+                  self.handle, kernel_name, core.x, core.y, config.processor, config.noc);
+        
         let handle =
             unsafe { tt_metal_CreateKernel(self.handle, kernel_name.as_ptr(), core, &config) };
+            
+        eprintln!("ZLUDA DEBUG: tt_metal_CreateKernel returned handle={:p}", handle);
+        
         if handle.is_null() {
             Err("Failed to create kernel".to_string())
         } else {
@@ -748,10 +757,7 @@ impl Buffer {
     pub fn get_address(&self) -> u64 {
         // Since tt_metal_GetBufferAddress is not available, we're using a dummy implementation
         // that returns a constant value instead of making the FFI call
-        println!(
-            "Warning: Using dummy buffer address since tt_metal_GetBufferAddress is not available"
-        );
-        0xDEADBEEF // Dummy address
+        unsafe { tt_metal_GetBufferAddress(self.handle) }
     }
 }
 

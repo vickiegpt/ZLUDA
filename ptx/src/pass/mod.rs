@@ -17,7 +17,7 @@ use strum_macros::EnumIter;
 mod debug_integration;
 mod deparamize_functions;
 pub(crate) mod emit_llvm;
-pub(crate) mod emit_linalg_mlir;
+pub(crate) mod emit_tosa_mlir;
 mod expand_operands;
 mod fix_special_registers2;
 mod hoist_globals;
@@ -89,7 +89,7 @@ pub fn to_mlir_module<'input>(ast: ast::Module<'input>) -> Result<String, Transl
     eprintln!("ZLUDA DEBUG: Completed hoist_globals");
     
     // Convert directly to Linalg MLIR
-    let mlir_code = emit_linalg_mlir::run(flat_resolver, directives)?;
+    let mlir_code = emit_tosa_mlir::run(flat_resolver, directives)?;
     eprintln!("ZLUDA DEBUG: Completed emit_linalg_mlir");
     
     Ok(mlir_code)
