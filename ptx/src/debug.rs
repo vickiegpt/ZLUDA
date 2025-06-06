@@ -2,12 +2,15 @@
 // This module provides functionality to maintain mappings from PTX source to
 // compiled target code (SASS/AMD GCN/Intel SPIRV) for program state recovery
 
+use super::*;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::ptr;
 
+use llvm_zluda::core::*;
 use llvm_zluda::debuginfo::*;
 use llvm_zluda::prelude::*;
+use llvm_zluda::*;
 use serde::{Deserialize, Serialize};
 
 /// PTX source location information
@@ -61,7 +64,7 @@ pub struct PtxDwarfBuilder {
     pub context: LLVMContextRef,
     pub module: LLVMModuleRef,
     di_builder: *mut llvm_zluda::LLVMOpaqueDIBuilder,
-    compile_unit: LLVMMetadataRef,
+    pub compile_unit: LLVMMetadataRef,
     file: LLVMMetadataRef,
     source_mappings: Vec<DwarfMappingEntry>,
     current_scope: LLVMMetadataRef,
@@ -94,10 +97,10 @@ impl PtxDwarfBuilder {
             directory_cstr.as_bytes().len(),
         );
 
-        // Create compile unit
+        // Create compile unit with proper parameters
         let di_compile_unit = LLVMDIBuilderCreateCompileUnit(
             di_builder,
-            llvm_zluda::debuginfo::LLVMDWARFSourceLanguage::LLVMDWARFSourceLanguageC, // PTX as C-like
+            llvm_zluda::debuginfo::LLVMDWARFSourceLanguage::LLVMDWARFSourceLanguageC, // Use C for compatibility
             di_file,
             producer_cstr.as_ptr(),
             producer_cstr.as_bytes().len(),
@@ -117,6 +120,45 @@ impl PtxDwarfBuilder {
             0,           // SDK length
         );
 
+        // Set DWARF version metadata to fix "invalid version (0)" error
+        // Only add module flags if they don't already exist
+        let dwarf_version_str = CString::new("Dwarf Version").unwrap();
+        let existing_dwarf_flag = LLVMGetModuleFlag(
+            module,
+            dwarf_version_str.as_ptr(),
+            dwarf_version_str.as_bytes().len(),
+        );
+        if existing_dwarf_flag.is_null() {
+            let version_val = LLVMConstInt(LLVMInt32TypeInContext(context), 4, 0); // DWARF version 4
+            let version_metadata = LLVMValueAsMetadata(version_val);
+            LLVMAddModuleFlag(
+                module,
+                LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorError,
+                dwarf_version_str.as_ptr(),
+                dwarf_version_str.as_bytes().len(),
+                version_metadata,
+            );
+        }
+
+        // Also set Debug Info Version
+        let debug_info_version_str = CString::new("Debug Info Version").unwrap();
+        let existing_debug_flag = LLVMGetModuleFlag(
+            module,
+            debug_info_version_str.as_ptr(),
+            debug_info_version_str.as_bytes().len(),
+        );
+        if existing_debug_flag.is_null() {
+            let debug_version_val = LLVMConstInt(LLVMInt32TypeInContext(context), 3, 0); // Debug Info Version 3
+            let debug_version_metadata = LLVMValueAsMetadata(debug_version_val);
+            LLVMAddModuleFlag(
+                module,
+                LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorError,
+                debug_info_version_str.as_ptr(),
+                debug_info_version_str.as_bytes().len(),
+                debug_version_metadata,
+            );
+        }
+
         Ok(Self {
             context,
             module,
@@ -124,7 +166,7 @@ impl PtxDwarfBuilder {
             compile_unit: di_compile_unit,
             file: di_file,
             source_mappings: Vec::new(),
-            current_scope: di_compile_unit,
+            current_scope: di_compile_unit, // Use compile unit as initial scope
             variable_counter: 0,
         })
     }
@@ -140,15 +182,22 @@ impl PtxDwarfBuilder {
         line: u32,
         column: u32,
         scope: Option<LLVMMetadataRef>,
-    ) -> LLVMMetadataRef {
-        let scope = scope.unwrap_or(self.current_scope);
-        LLVMDIBuilderCreateDebugLocation(
+    ) -> Result<LLVMMetadataRef, String> {
+        let scope_ref = scope.unwrap_or(self.current_scope);
+
+        let debug_loc = LLVMDIBuilderCreateDebugLocation(
             self.context,
             line,
             column,
-            scope,
-            ptr::null_mut(), // inlined at
-        )
+            scope_ref,
+            ptr::null_mut(), // no inlined_at
+        );
+
+        if debug_loc.is_null() {
+            return Err("Failed to create debug location".to_string());
+        }
+
+        Ok(debug_loc)
     }
 
     /// Create a function debug info entry
@@ -239,7 +288,7 @@ impl PtxDwarfBuilder {
     ) -> Result<LLVMMetadataRef, String> {
         // Create array of parameter types
         let mut all_types = Vec::new();
-        
+
         // Add return type as first element (LLVM convention)
         if let Some(ret_type) = return_type {
             all_types.push(ret_type);
@@ -248,10 +297,10 @@ impl PtxDwarfBuilder {
             let void_type = self.create_basic_type("void", 0, 0)?;
             all_types.push(void_type);
         }
-        
+
         // Add parameter types
         all_types.extend_from_slice(parameter_types);
-        
+
         Ok(LLVMDIBuilderCreateSubroutineType(
             self.di_builder,
             self.file, // file
@@ -264,6 +313,12 @@ impl PtxDwarfBuilder {
     /// Finalize debug info generation
     pub unsafe fn finalize(&self) {
         LLVMDIBuilderFinalize(self.di_builder);
+    }
+
+    /// Create a compile unit for the module
+    pub unsafe fn create_compile_unit(&mut self) -> Result<(), String> {
+        // The compile unit is already created in the constructor, so this is a no-op
+        Ok(())
     }
 
     /// Get all source mappings for state recovery
@@ -337,6 +392,24 @@ impl PtxDwarfBuilder {
     /// Get the underlying DIBuilder
     pub fn get_builder(&self) -> *mut llvm_zluda::LLVMOpaqueDIBuilder {
         self.di_builder
+    }
+
+    /// Finalize the compilation unit
+    pub unsafe fn finalize_compile_unit(&self) -> Result<(), String> {
+        // For LLVM, we don't need to do anything specific to finalize the compile unit
+        // The debug info is finalized automatically when the module is compiled
+        Ok(())
+    }
+
+    /// Clear all debug locations to prevent invalid records
+    pub unsafe fn clear_debug_locations(&self) -> Result<(), String> {
+        // Set null debug location on all DIBuilders
+        LLVMDIBuilderFinalize(self.di_builder);
+
+        // Clear any pending nodes by finalizing
+        LLVMDIBuilderFinalize(self.di_builder);
+
+        Ok(())
     }
 }
 

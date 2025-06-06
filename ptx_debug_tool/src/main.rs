@@ -225,7 +225,7 @@ async fn debug_command(args: DebugArgs) -> anyhow::Result<()> {
     println!("Starting interactive debugging session...");
     
     let mut manager = PtxStateRecoveryManager::new();
-    manager.load_debug_mappings(&args.mapping_file)?;
+    manager.load_debug_mappings(&args.mapping_file).unwrap();
 
     // Set initial breakpoint if provided
     if let Some(bp_location) = args.breakpoint {
@@ -354,7 +354,7 @@ async fn recover_command(args: RecoverArgs) -> anyhow::Result<()> {
     println!("Recovering PTX state from crash...");
     
     let mut manager = PtxStateRecoveryManager::new();
-    manager.load_debug_mappings(&args.mapping_file)?;
+    manager.load_debug_mappings(&args.mapping_file).unwrap();
 
     // Parse address
     let address = if args.address.starts_with("0x") {
@@ -375,7 +375,6 @@ async fn recover_command(args: RecoverArgs) -> anyhow::Result<()> {
         if let Some(memory_dump_path) = args.memory_dump {
             let memory_data = fs::read(&memory_dump_path)?;
             manager.take_memory_snapshot("crash_dump".to_string(), address, memory_data);
-            println!("Memory dump loaded: {} bytes", memory_data.len());
         }
 
         // Generate recovery report

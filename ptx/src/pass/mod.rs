@@ -23,7 +23,6 @@ mod fix_special_registers2;
 mod hoist_globals;
 mod insert_explicit_load_store;
 mod insert_implicit_conversions2;
-pub(crate) mod llvm_helpers;
 mod normalize_identifiers2;
 mod normalize_predicates2;
 mod replace_instructions_with_function_calls;
@@ -45,10 +44,15 @@ quick_error! {
     #[derive(Debug)]
     pub enum TranslateError {
         UnknownSymbol {}
+        UnreachableCodeError {}
+        Todo
+        InvalidSymbolFormat {}
+        OutOfRangeCall {}
         UntypedSymbol {}
         MismatchedType {}
         Unreachable {}
-        Todo {}
+        UnexpectedError(message: String) {}
+        LLVMValidationError(message: String) {}
     }
 }
 
@@ -264,7 +268,7 @@ fn error_unreachable() -> TranslateError {
 
 #[cfg(not(debug_assertions))]
 fn error_unreachable() -> TranslateError {
-    TranslateError::Unreachable
+    TranslateError::UnreachableCodeError
 }
 
 #[cfg(debug_assertions)]
@@ -294,7 +298,7 @@ fn error_mismatched_type() -> TranslateError {
 
 #[cfg(not(debug_assertions))]
 fn error_mismatched_type() -> TranslateError {
-    TranslateError::MismatchedType
+    TranslateError::InvalidSymbolFormat
 }
 
 enum Statement<I, P: ast::Operand> {

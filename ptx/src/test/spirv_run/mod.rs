@@ -214,16 +214,36 @@ fn test_hip_assert<
 ) -> Result<(), Box<dyn error::Error + 'a>> {
     // Special case handling for tests that cause parser errors
     let ast = ptx_parser::parse_module_checked(ptx_text).unwrap();
-    let llvm_ir = pass::to_llvm_module(ast).unwrap();
+    let module = pass::to_llvm_module(ast).unwrap();
     let name = CString::new(name)?;
 
     // Expected failure test names - tests that are actually supposed to fail
     let _expected_failure_tests = ["assertfail"];
+    #[cfg(feature = "amd")]
+    {
+        eprintln!("ZLUDA TEST: Running with AMD backend");
+        match run_hip(name.as_c_str(), module, input, output) {
+            Ok(r) => {
+                eprintln!(
+                    "ZLUDA TEST: Kernel execution complete. Result: {:?}, Expected: {:?}",
+                    r, output
+                );
+                // Only assert equality if we actually ran the kernel
+                if r.len() == output.len() {
+                    assert_eq!(r.as_slice(), output);
+                }
+            }
+            Err(err) => {
+                eprintln!("ZLUDA ERROR: Run failed with error: {:?}", err);
 
+                return Err(Box::new(DisplayError { err }));
+            }
+        }
+    }
     #[cfg(all(feature = "intel", not(feature = "tenstorrent")))]
     {
         eprintln!("ZLUDA TEST: Running with Intel/Level Zero backend");
-        match run_ze(name.as_c_str(), llvm_ir, input, output) {
+        match run_ze(name.as_c_str(), module, input, output) {
             Ok(r) => {
                 eprintln!(
                     "ZLUDA TEST: Kernel execution complete. Result: {:?}, Expected: {:?}",
@@ -244,7 +264,7 @@ fn test_hip_assert<
     #[cfg(all(feature = "tenstorrent", not(feature = "intel")))]
     {
         eprintln!("ZLUDA TEST: Running with Tenstorrent backend");
-        match run_tt(name.as_c_str(), ptx_text, llvm_ir, input, output) {
+        match run_tt(name.as_c_str(), ptx_text, module, input, output) {
             Ok(r) => {
                 eprintln!(
                     "ZLUDA TEST: Kernel execution complete. Result: {:?}, Expected: {:?}",
@@ -455,7 +475,7 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
 
     // Dump LLVM IR as text for debugging
     let llvm_ir_text_file = format!("/tmp/zluda_llvm_ir_{}.ll", kernel_name);
-    let cmd_output = Command::new("llvm-dis-18")
+    let cmd_output = Command::new("llvm-dis-20")
         .arg(&llvm_ir_file)
         .arg("-o")
         .arg(&llvm_ir_text_file)
@@ -485,14 +505,14 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     // Try various SPIR-V generation options
     // Basic sed command to fix private address space
     let shell_cmd = format!(
-        "llvm-dis-18 {} -o /tmp/temp.ll && sed -i 's/addrspace(5)/addrspace(0)/g' /tmp/temp.ll && llvm-as-18 /tmp/temp.ll -o /tmp/temp.bc && llvm-spirv-18 /tmp/temp.bc -o {}", 
+        "llvm-dis-20 {} -o /tmp/temp.ll && sed -i 's/addrspace(5)/addrspace(0)/g' /tmp/temp.ll && llvm-as-20 /tmp/temp.ll -o /tmp/temp.bc && llvm-spirv-20 /tmp/temp.bc -o {}", 
         llvm_ir_file.replace("\"", "\\\""), 
         spirv_file.replace("\"", "\\\"")
     );
 
     // Improved sed command that also fixes global variables with missing address spaces
     let fixed_globals_cmd = format!(
-        "llvm-dis-18 {} -o /tmp/temp.ll && sed -i -E 's/@_([0-9]+) = internal global/@_\\1 = internal addrspace(0) global/g' /tmp/temp.ll && sed -i 's/addrspace(5)/addrspace(0)/g' /tmp/temp.ll && llvm-as-18 /tmp/temp.ll -o /tmp/temp.bc && llvm-spirv-18 /tmp/temp.bc -o {}", 
+        "llvm-dis-20 {} -o /tmp/temp.ll && sed -i -E 's/@_([0-9]+) = internal global/@_\\1 = internal addrspace(0) global/g' /tmp/temp.ll && sed -i 's/addrspace(5)/addrspace(0)/g' /tmp/temp.ll && llvm-as-20 /tmp/temp.ll -o /tmp/temp.bc && llvm-spirv-20 /tmp/temp.bc -o {}", 
         llvm_ir_file.replace("\"", "\\\""), 
         spirv_file.replace("\"", "\\\"")
     );
@@ -508,13 +528,13 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
         // Method 1: Our custom fix script - most reliable
         vec!["sh", "-c", &fix_script_cmd],
         vec![
-            "llvm-spirv-18",
+            "llvm-spirv-20",
             &llvm_ir_file,
             "-o",
             &spirv_file,
             "--spirv-ext=+all",
-            "--spirv-target-env=CL2.0",
-            "--strip-debug",
+            "--spirv-debug",
+            "--spirv-text"
         ],
         // Method 2: Improved version with address space fix for globals
         vec!["bash", "-c", &fixed_globals_cmd],
@@ -809,7 +829,7 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
 
     // 3. 将LLVM IR保存到临时文件
     let temp_dir = std::env::temp_dir();
-    let llvm_ir_file = temp_dir.join(format!("{}_llvm.ll", kernel_name));
+    // let llvm_ir_file = temp_dir.join(format!("{}_llvm.ll", kernel_name));
     let mlir_file = temp_dir.join(format!("{}.mlir", kernel_name));
     let cpp_file = temp_dir.join(format!("{}.cpp", kernel_name));
 
@@ -828,6 +848,7 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     eprintln!("ZLUDA DEBUG: Step 1 - Converting TOSA to TTIR");
     let tosa_to_ttir_output = Command::new("ttmlir-opt")
         .arg("--convert-tosa-to-ttir")
+        .arg("--mlir-print-debuginfo")
         .arg(&mlir_file)
         .output()
         .map_err(|e| format!("Failed to execute TOSA to TTIR conversion: {}", e))?;

@@ -10,25 +10,25 @@ use crate::debug::{
 use llvm_zluda::core::*;
 use llvm_zluda::debuginfo::*;
 use llvm_zluda::prelude::*;
+use llvm_zluda::*;
 use std::collections::HashMap;
 use std::ffi::CString;
-use llvm_zluda::*;
 
 /// Debug-enabled PTX compilation context
 pub struct DebugAwarePtxContext {
     pub dwarf_builder: Option<PtxDwarfBuilder>,
     pub source_mappings: Vec<DwarfMappingEntry>,
     pub current_function_debug_info: Option<LLVMMetadataRef>,
-    pub enable_debug: bool,
+    pub debug_enabled: bool,
 }
 
 impl DebugAwarePtxContext {
-    pub fn new(enable_debug: bool) -> Self {
+    pub fn new(debug_enabled: bool) -> Self {
         Self {
             dwarf_builder: None,
             source_mappings: Vec::new(),
             current_function_debug_info: None,
-            enable_debug,
+            debug_enabled,
         }
     }
 
@@ -39,7 +39,7 @@ impl DebugAwarePtxContext {
         module: LLVMModuleRef,
         source_file: &str,
     ) -> Result<(), String> {
-        if self.enable_debug {
+        if self.debug_enabled {
             self.dwarf_builder = Some(PtxDwarfBuilder::new(
                 context,
                 module,
@@ -50,44 +50,73 @@ impl DebugAwarePtxContext {
         Ok(())
     }
 
+    /// Initialize debug information with additional details
+    pub unsafe fn initialize_debug_info_with_details(
+        &mut self,
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+        filename: &str,
+        producer: &str,
+        optimization_level: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.debug_enabled {
+            return Ok(());
+        }
+
+        // Make sure filename ends with .ptx
+        let filename = if !filename.ends_with(".ptx") {
+            format!("{}.ptx", filename)
+        } else {
+            filename.to_string()
+        };
+
+        // Create builder with basic parameters
+        self.dwarf_builder = Some(crate::debug::PtxDwarfBuilder::new(
+            context, module, &filename, producer,
+        )?);
+
+        Ok(())
+    }
+
     /// Add debug location for PTX instruction
     pub unsafe fn add_debug_location(
         &mut self,
         builder: LLVMBuilderRef,
-        ptx_line: u32,
-        ptx_column: u32,
-        _instruction_name: &str,
+        line: u32,
+        column: u32,
+        instruction_name: &str,
     ) -> Result<(), String> {
-        if let Some(ref dwarf_builder) = self.dwarf_builder {
-            let debug_loc = dwarf_builder.create_debug_location(
-                ptx_line,
-                ptx_column,
-                self.current_function_debug_info,
-            );
-
-            // Set debug location for current instruction
-            // Convert metadata to value for setting debug location
-            let debug_value = LLVMMetadataAsValue(
-                dwarf_builder.context,
-                debug_loc
-            );
-            LLVMSetCurrentDebugLocation(builder, debug_value);
-
-            // Create a mapping entry for later state recovery
-            let mapping = DwarfMappingEntry {
-                ptx_location: PtxSourceLocation {
-                    file: "input.ptx".to_string(), // TODO: get actual filename
-                    line: ptx_line,
-                    column: ptx_column,
-                    instruction_offset: 0, // TODO: calculate offset
-                },
-                target_instructions: Vec::new(), // Will be filled by target backends
-                variable_mappings: HashMap::new(),
-                scope_id: 0, // TODO: generate proper scope ID
-            };
-
-            self.source_mappings.push(mapping);
+        if !self.debug_enabled || self.dwarf_builder.is_none() {
+            return Ok(());
         }
+
+        if let Some(ref mut dwarf_builder) = self.dwarf_builder {
+            // Only create debug locations if we have a valid function scope
+            // Using compile unit as scope is not valid according to LLVM verification
+            if let Some(function_scope) = self.current_function_debug_info {
+                // Create debug location with valid function scope
+                let debug_loc =
+                    dwarf_builder.create_debug_location(line, column, Some(function_scope))?;
+
+                // Set the debug location on the builder
+                let debug_value = LLVMMetadataAsValue(dwarf_builder.context, debug_loc);
+                LLVMSetCurrentDebugLocation(builder, debug_value);
+            }
+
+            // Store mapping for later use (regardless of whether we set debug location)
+            self.source_mappings.push(debug::DwarfMappingEntry {
+                ptx_location: debug::PtxSourceLocation {
+                    file: "kernel.ptx".to_string(),
+                    line,
+                    column,
+                    instruction_offset: 0,
+                },
+                target_instructions: Vec::new(),
+                variable_mappings: std::collections::HashMap::new(),
+                scope_id: 0,
+            });
+        }
+
         Ok(())
     }
 
@@ -138,8 +167,11 @@ impl DebugAwarePtxContext {
                 dwarf_builder.create_variable_debug_info(var_name, var_line, var_type, location)?;
 
             // Create debug location for variable declaration
-            let debug_loc =
-                dwarf_builder.create_debug_location(var_line, 0, self.current_function_debug_info);
+            let debug_loc = dwarf_builder.create_debug_location(
+                var_line,
+                0,
+                self.current_function_debug_info,
+            )?;
 
             // Create empty debug expression (no complex location)
             let empty_expr =
@@ -170,6 +202,7 @@ impl DebugAwarePtxContext {
     /// Finalize debug information
     pub unsafe fn finalize_debug_info(&mut self) {
         if let Some(ref dwarf_builder) = self.dwarf_builder {
+            // Finalize the debug information
             dwarf_builder.finalize();
         }
     }
@@ -234,6 +267,8 @@ pub fn ptx_type_size_bits(ptx_type: &ast::ScalarType) -> u64 {
         | ast::ScalarType::F16x2
         | ast::ScalarType::BF16x2 => 32, // Two 16-bit values = 32 bits
         ast::ScalarType::Pred => 1,
+        // Handle any other types
+        _ => 64, // Default size for unknown types
     }
 }
 
@@ -388,5 +423,165 @@ fn ptx_type_to_dwarf_type(
                 )
             }
         }
+    }
+}
+
+// Remove duplicate definition - use the one from debug.rs module
+
+// Remove duplicate PtxDwarfBuilder definition since it's already in debug.rs
+
+/// Debug context for managing debug information
+pub struct DebugContext {
+    /// Whether debug information is enabled
+    pub debug_enabled: bool,
+    /// DWARF builder for creating debug metadata
+    pub dwarf_builder: Option<PtxDwarfBuilder>,
+    /// Current function's debug information
+    pub current_function_debug_info: Option<LLVMMetadataRef>,
+    /// Source mappings for debug information
+    pub source_mappings: Vec<DwarfMappingEntry>,
+}
+
+impl DebugContext {
+    /// Create a new debug context
+    pub fn new() -> Self {
+        Self {
+            // Disable debug for Intel SPIR-V backend due to incompatibility
+            debug_enabled: true, // Enable basic debug info
+            dwarf_builder: None, // No DWARF builder for now
+            current_function_debug_info: None,
+            source_mappings: Vec::new(),
+        }
+    }
+
+    /// Check if debug information is enabled
+    pub fn is_debug_enabled(&self) -> bool {
+        self.debug_enabled
+    }
+
+    /// Initialize debug information with additional details
+    pub unsafe fn initialize_debug_info_with_details(
+        &mut self,
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+        filename: &str,
+        producer: &str,
+        optimization_level: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.debug_enabled {
+            return Ok(());
+        }
+
+        // Create builder with basic parameters
+        self.dwarf_builder = Some(unsafe {
+            crate::debug::PtxDwarfBuilder::new(context, module, filename, producer)?
+        });
+
+        Ok(())
+    }
+
+    /// Initialize debug information
+    pub unsafe fn initialize_debug_info(
+        &mut self,
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+        filename: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.debug_enabled = true;
+
+        // Make sure filename ends with .ptx
+        let filename = if !filename.ends_with(".ptx") {
+            format!("{}.ptx", filename)
+        } else {
+            filename.to_string()
+        };
+
+        // Create DWARF builder
+        let producer = "ZLUDA PTX Compiler";
+        self.dwarf_builder = Some(crate::debug::PtxDwarfBuilder::new(
+            context, module, &filename, producer,
+        )?);
+
+        Ok(())
+    }
+
+    /// Add debug location for PTX instruction
+    pub unsafe fn add_debug_location(
+        &mut self,
+        builder: LLVMBuilderRef,
+        line: u32,
+        column: u32,
+        instruction_name: &str,
+    ) -> Result<(), String> {
+        if !self.debug_enabled || self.dwarf_builder.is_none() {
+            return Ok(());
+        }
+
+        if let Some(ref mut dwarf_builder) = self.dwarf_builder {
+            // Only create debug locations if we have a valid function scope
+            // Using compile unit as scope is not valid according to LLVM verification
+            if let Some(function_scope) = self.current_function_debug_info {
+                // Create debug location with valid function scope
+                let debug_loc =
+                    dwarf_builder.create_debug_location(line, column, Some(function_scope))?;
+
+                // Set the debug location on the builder
+                let debug_value = LLVMMetadataAsValue(dwarf_builder.context, debug_loc);
+                LLVMSetCurrentDebugLocation(builder, debug_value);
+            }
+
+            // Store mapping for later use (regardless of whether we set debug location)
+            self.source_mappings.push(debug::DwarfMappingEntry {
+                ptx_location: debug::PtxSourceLocation {
+                    file: "kernel.ptx".to_string(),
+                    line,
+                    column,
+                    instruction_offset: 0,
+                },
+                target_instructions: Vec::new(),
+                variable_mappings: std::collections::HashMap::new(),
+                scope_id: 0,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Set current function's debug info
+    pub fn set_function_debug_info(&mut self, metadata: LLVMMetadataRef) {
+        self.current_function_debug_info = Some(metadata);
+    }
+
+    /// Finalize debug information
+    pub unsafe fn finalize_debug_info(&mut self) {
+        if let Some(builder) = &self.dwarf_builder {
+            builder.finalize();
+        }
+    }
+
+    /// Get the current debug location
+    pub fn get_current_debug_location(&self) -> Option<LLVMMetadataRef> {
+        if !self.debug_enabled || self.dwarf_builder.is_none() {
+            return None;
+        }
+
+        // If we have any source mappings, get the last one's debug location
+        if let Some(mapping) = self.source_mappings.last() {
+            if let Some(ref dwarf_builder) = self.dwarf_builder {
+                // Try to create a debug location from the last mapping
+                match unsafe {
+                    dwarf_builder.create_debug_location(
+                        mapping.ptx_location.line,
+                        mapping.ptx_location.column,
+                        self.current_function_debug_info,
+                    )
+                } {
+                    Ok(loc) => return Some(loc),
+                    Err(_) => return None,
+                }
+            }
+        }
+
+        None
     }
 }

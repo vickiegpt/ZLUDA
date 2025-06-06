@@ -1648,6 +1648,17 @@ impl CvtDetails {
                 CvtMode::Bitcast
             }
             (ScalarKind::Unsigned, ScalarKind::Signed) => CvtMode::SaturateSignedToUnsigned,
+            // Handle same-kind integer conversions with different sizes
+            (ScalarKind::Signed, ScalarKind::Signed) => match dst.size_of().cmp(&src.size_of()) {
+                Ordering::Greater => CvtMode::SignExtend,
+                Ordering::Equal => CvtMode::Bitcast,
+                Ordering::Less => CvtMode::Truncate,
+            },
+            (ScalarKind::Unsigned, ScalarKind::Unsigned) => match dst.size_of().cmp(&src.size_of()) {
+                Ordering::Greater => CvtMode::ZeroExtend,
+                Ordering::Equal => CvtMode::Bitcast,
+                Ordering::Less => CvtMode::Truncate,
+            },
             (_, _) => {
                 CvtMode::Bitcast
             }
