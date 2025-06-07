@@ -13,6 +13,7 @@ use llvm_zluda::prelude::*;
 use llvm_zluda::*;
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::ptr;
 
 /// Debug-enabled PTX compilation context
 pub struct DebugAwarePtxContext {
@@ -144,7 +145,7 @@ impl DebugAwarePtxContext {
         Ok(())
     }
 
-    /// Add variable debug info
+    /// Add variable debug info with enhanced PTX variable and memory address tracking
     pub unsafe fn add_variable_debug_info(
         &mut self,
         builder: LLVMBuilderRef,
@@ -155,13 +156,13 @@ impl DebugAwarePtxContext {
         storage: LLVMValueRef,
         location: &VariableLocation,
     ) -> Result<(), String> {
+        // Get encoding first to avoid borrowing conflicts
+        let encoding = self.get_ptx_dwarf_encoding(var_type_name);
+
         if let Some(ref mut dwarf_builder) = self.dwarf_builder {
-            // Create debug type for variable
-            let var_type = dwarf_builder.create_basic_type(
-                var_type_name,
-                var_size_bits,
-                4, // DW_ATE_float - using a default encoding value
-            )?;
+            // Create debug type for variable with PTX-specific encoding
+            let var_type =
+                dwarf_builder.create_basic_type(var_type_name, var_size_bits, encoding)?;
 
             let var_debug_info =
                 dwarf_builder.create_variable_debug_info(var_name, var_line, var_type, location)?;
@@ -173,29 +174,164 @@ impl DebugAwarePtxContext {
                 self.current_function_debug_info,
             )?;
 
-            // Create empty debug expression (no complex location)
-            let empty_expr =
-                LLVMDIBuilderCreateExpression(dwarf_builder.get_builder(), std::ptr::null_mut(), 0);
+            // Create enhanced debug expression based on variable location
+            let debug_expr = Self::create_ptx_variable_expression_static(
+                location,
+                var_size_bits,
+                dwarf_builder,
+            )?;
 
-            // Insert variable declaration using new debug format
-            // Note: Temporarily disabled due to LLVM API changes
-            // TODO: Re-enable when LLVM bindings are updated
+            // Insert variable declaration with enhanced location info
             LLVMZludaDIBuilderInsertDeclareRecordAtEnd(
                 dwarf_builder.get_builder(),
                 storage,
                 var_debug_info,
-                empty_expr,
+                debug_expr,
                 debug_loc,
                 LLVMGetInsertBlock(builder),
             );
 
-            // Update current mapping with variable info
-            if let Some(last_mapping) = self.source_mappings.last_mut() {
-                last_mapping
-                    .variable_mappings
-                    .insert(var_name.to_string(), location.clone());
+            // Create enhanced variable mapping with memory address info
+            self.add_enhanced_variable_mapping(var_name, location, var_line, var_size_bits)?;
+        }
+        Ok(())
+    }
+
+    /// Get PTX-specific DWARF encoding for variable types
+    fn get_ptx_dwarf_encoding(&self, var_type_name: &str) -> u32 {
+        match var_type_name {
+            "s8" | "s16" | "s32" | "s64" => 5, // DW_ATE_signed
+            "u8" | "u16" | "u32" | "u64" => 7, // DW_ATE_unsigned
+            "f16" | "f32" | "f64" => 4,        // DW_ATE_float
+            "b8" | "b16" | "b32" | "b64" => 8, // DW_ATE_boolean
+            "pred" => 2,                       // DW_ATE_boolean
+            _ => 7,                            // Default to unsigned
+        }
+    }
+
+    /// Create PTX variable expression with memory address information (static version)
+    unsafe fn create_ptx_variable_expression_static(
+        location: &VariableLocation,
+        size_bits: u64,
+        dwarf_builder: &debug::PtxDwarfBuilder,
+    ) -> Result<LLVMMetadataRef, String> {
+        let mut expr_ops = Vec::new();
+
+        match location {
+            VariableLocation::Register(reg_name) => {
+                // For register variables, create register-based expression
+                // DW_OP_reg0 + register_number
+                let reg_num = Self::parse_ptx_register_number_static(reg_name);
+                if reg_num < 32 {
+                    expr_ops.push(0x50 + reg_num as u64); // DW_OP_reg0 + n
+                } else {
+                    expr_ops.push(0x90); // DW_OP_regx
+                    expr_ops.push(reg_num as u64);
+                }
+            }
+            VariableLocation::Memory {
+                address: _,
+                size: _,
+            } => {
+                // For memory variables, use empty expression to avoid LLVM validation errors
+                // LLVM doesn't accept absolute memory addresses in debug expressions
+                // The variable info will still be available, just without location tracking
+            }
+            VariableLocation::Constant(value) => {
+                // For constant variables
+                if let Ok(const_val) = value.parse::<i64>() {
+                    if const_val >= 0 && const_val <= 31 {
+                        expr_ops.push(0x30 + const_val as u64); // DW_OP_lit0 + n
+                    } else {
+                        expr_ops.push(0x10); // DW_OP_consts
+                        expr_ops.push(const_val as u64);
+                    }
+                }
             }
         }
+
+        // Create the debug expression (only if we have operations)
+        if expr_ops.is_empty() {
+            Ok(ptr::null_mut())
+        } else {
+            let expr = LLVMDIBuilderCreateExpression(
+                dwarf_builder.get_builder(),
+                expr_ops.as_mut_ptr() as *mut u64,
+                expr_ops.len(),
+            );
+            Ok(expr)
+        }
+    }
+
+    /// Parse PTX register name to get register number (static version)
+    fn parse_ptx_register_number_static(reg_name: &str) -> u32 {
+        // Extract register number from PTX register names like %r0, %f1, etc.
+        if let Some(num_part) = reg_name
+            .strip_prefix('%')
+            .and_then(|s| s.chars().skip(1).collect::<String>().parse::<u32>().ok())
+        {
+            num_part
+        } else {
+            0 // Default to register 0
+        }
+    }
+
+    /// Add enhanced variable mapping with PTX-specific information
+    fn add_enhanced_variable_mapping(
+        &mut self,
+        var_name: &str,
+        location: &VariableLocation,
+        line: u32,
+        size_bits: u64,
+    ) -> Result<(), String> {
+        // Create enhanced mapping entry
+        let ptx_location = debug::PtxSourceLocation {
+            file: "kernel.ptx".to_string(),
+            line,
+            column: 0,
+            instruction_offset: 0,
+        };
+
+        let mut variable_mappings = std::collections::HashMap::new();
+        variable_mappings.insert(var_name.to_string(), location.clone());
+
+        // Add memory address information to target instructions
+        let target_instruction = match location {
+            VariableLocation::Memory { address, size } => {
+                debug::TargetInstruction::IntelSpirv {
+                    instruction: format!("var_decl_{}", var_name),
+                    opcode: 0x20, // OpVariable in SPIR-V
+                    operands: vec![
+                        format!("ptr_0x{:x}", address),
+                        format!("size_{}", size),
+                        format!("bits_{}", size_bits),
+                    ],
+                }
+            }
+            VariableLocation::Register(reg_name) => {
+                debug::TargetInstruction::IntelSpirv {
+                    instruction: format!("reg_assign_{}", var_name),
+                    opcode: 0x3e, // OpLoad in SPIR-V
+                    operands: vec![reg_name.clone(), format!("bits_{}", size_bits)],
+                }
+            }
+            VariableLocation::Constant(value) => {
+                debug::TargetInstruction::IntelSpirv {
+                    instruction: format!("const_assign_{}", var_name),
+                    opcode: 0x2b, // OpConstant in SPIR-V
+                    operands: vec![value.clone(), format!("bits_{}", size_bits)],
+                }
+            }
+        };
+
+        let mapping_entry = debug::DwarfMappingEntry {
+            ptx_location,
+            target_instructions: vec![target_instruction],
+            variable_mappings,
+            scope_id: self.current_function_debug_info.map(|_| 1).unwrap_or(0) as u64,
+        };
+
+        self.source_mappings.push(mapping_entry);
         Ok(())
     }
 

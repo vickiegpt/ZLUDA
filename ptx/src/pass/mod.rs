@@ -18,11 +18,14 @@ mod debug_integration;
 mod deparamize_functions;
 pub(crate) mod emit_llvm;
 pub(crate) mod emit_tosa_mlir;
+pub(crate) mod emit_ttir_mlir;
 mod expand_operands;
 mod fix_special_registers2;
 mod hoist_globals;
 mod insert_explicit_load_store;
 mod insert_implicit_conversions2;
+pub(crate) mod mlir_debug_framework;
+pub(crate) mod mlir_debugger_integration;
 mod normalize_identifiers2;
 mod normalize_predicates2;
 mod replace_instructions_with_function_calls;
@@ -53,6 +56,7 @@ quick_error! {
         Unreachable {}
         UnexpectedError(message: String) {}
         LLVMValidationError(message: String) {}
+        MissingId {}
     }
 }
 
@@ -91,11 +95,11 @@ pub fn to_mlir_module<'input>(ast: ast::Module<'input>) -> Result<String, Transl
     eprintln!("ZLUDA DEBUG: Completed replace_instructions_with_function_calls");
     let directives = hoist_globals::run(directives)?;
     eprintln!("ZLUDA DEBUG: Completed hoist_globals");
-    
+
     // Convert directly to Linalg MLIR
     let mlir_code = emit_tosa_mlir::run(flat_resolver, directives)?;
     eprintln!("ZLUDA DEBUG: Completed emit_linalg_mlir");
-    
+
     Ok(mlir_code)
 }
 
@@ -196,7 +200,7 @@ pub struct KernelInfo {
     pub uses_shared_mem: bool,
 }
 
-#[derive(Ord, PartialOrd, Eq, PartialEq, Hash, Copy, Clone, EnumIter)]
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Hash, Copy, Clone, EnumIter)]
 enum PtxSpecialRegister {
     Tid,
     Ntid,
@@ -650,7 +654,7 @@ struct FunctionPointerDetails {
     src: SpirvWord,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct SpirvWord(u32);
 
 impl From<u32> for SpirvWord {
@@ -1026,6 +1030,12 @@ type UnconditionalStatement =
 impl From<SpirvWord> for String {
     fn from(word: SpirvWord) -> Self {
         format!("_{}", word.0)
+    }
+}
+
+impl std::fmt::Display for SpirvWord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

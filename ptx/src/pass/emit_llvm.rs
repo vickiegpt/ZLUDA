@@ -32,7 +32,7 @@ use std::ops::Deref;
 use std::{i8, ptr};
 
 use super::*;
-use crate::debug::{PtxDwarfBuilder, PtxSourceLocation, VariableLocation};
+use crate::debug::{PtxDwarfBuilder, VariableLocation};
 use crate::pass::debug_integration::{
     ptx_type_size_bits, ptx_type_to_dwarf_encoding, DebugAwarePtxContext, DebugContext,
 };
@@ -1045,15 +1045,15 @@ impl<'a> MethodEmitContext<'a> {
             let location = match var.state_space {
                 ast::StateSpace::Reg => VariableLocation::Register(var_name.to_string()),
                 ast::StateSpace::Local => VariableLocation::Memory {
-                    address: 0,
+                    address: alloca as u64, // Use actual alloca address
                     size: (var_size_bits / 8) as u32,
                 },
                 ast::StateSpace::Shared => VariableLocation::Memory {
-                    address: 0,
+                    address: alloca as u64,
                     size: (var_size_bits / 8) as u32,
                 },
                 ast::StateSpace::Global => VariableLocation::Memory {
-                    address: 0,
+                    address: alloca as u64,
                     size: (var_size_bits / 8) as u32,
                 },
                 ast::StateSpace::Const => VariableLocation::Constant(var_name.to_string()),
@@ -1061,15 +1061,160 @@ impl<'a> MethodEmitContext<'a> {
                 _ => VariableLocation::Register(var_name.to_string()), // Default fallback
             };
 
-            // Log debug info for the variable instead of calling the missing function
-            eprintln!(
-                "DEBUG: Variable debug info for {}: type={}, size={}",
-                var_name, type_name, var_size_bits
-            );
+            // Actually add the variable debug info to DWARF
+            // Create a DWARF variable entry using LLVM debug API
+            if self.debug_context.debug_enabled {
+                // Extract values to avoid borrowing conflicts
+                let current_function_di = self.debug_context.current_function_debug_info;
+                let has_dwarf_builder = self.debug_context.dwarf_builder.is_some();
+
+                if has_dwarf_builder {
+                    if let Some(ref mut dwarf_builder) = self.debug_context.dwarf_builder {
+                        unsafe {
+                            // Create basic type for the variable
+                            let di_basic_type = dwarf_builder
+                                .create_basic_type(
+                                    type_name,
+                                    var_size_bits,
+                                    4, // Default encoding
+                                )
+                                .unwrap_or_else(|_| ptr::null_mut());
+
+                            if !di_basic_type.is_null() {
+                                // Create the variable debug info
+                                if let Ok(di_variable) = dwarf_builder.create_variable_debug_info(
+                                    var_name,
+                                    self.current_line,
+                                    di_basic_type,
+                                    &location,
+                                ) {
+                                    // Create debug location for the variable
+                                    let debug_loc = dwarf_builder
+                                        .create_debug_location(
+                                            self.current_line,
+                                            0,
+                                            current_function_di,
+                                        )
+                                        .unwrap_or_else(|_| ptr::null_mut());
+
+                                    // Create debug expression
+                                    let debug_expr =
+                                        match Self::create_ptx_variable_expression_static(
+                                            &location,
+                                            var_size_bits,
+                                            dwarf_builder,
+                                        ) {
+                                            Ok(expr) => expr,
+                                            Err(e) => {
+                                                eprintln!("Warning: Failed to create debug expression: {}", e);
+                                                ptr::null_mut()
+                                            }
+                                        };
+
+                                    // Create debug declare instruction
+                                    if !debug_loc.is_null() && !di_variable.is_null() {
+                                        // If debug_expr is null, create an empty expression
+                                        let expression = if debug_expr.is_null() {
+                                            llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
+                                                dwarf_builder.get_builder(),
+                                                ptr::null_mut(),
+                                                0,
+                                            )
+                                        } else {
+                                            debug_expr
+                                        };
+
+                                        llvm_zluda::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd(
+                                            dwarf_builder.get_builder(),
+                                            alloca,
+                                            di_variable,
+                                            expression,
+                                            debug_loc,
+                                            LLVMGetInsertBlock(self.builder),
+                                        );
+
+                                        eprintln!(
+                                            "DEBUG: Variable debug info successfully added for {}: type={}, size={}, location={:?}",
+                                            var_name, type_name, var_size_bits, location
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
     }
+
+    /// Create PTX variable expression with memory address information (static version)
+    unsafe fn create_ptx_variable_expression_static(
+        location: &VariableLocation,
+        size_bits: u64,
+        dwarf_builder: &mut PtxDwarfBuilder,
+    ) -> Result<LLVMMetadataRef, String> {
+        let mut expr_ops = Vec::new();
+
+        match location {
+            VariableLocation::Register(reg_name) => {
+                // For register variables, create register-based expression
+                let reg_num = Self::parse_ptx_register_number_static(reg_name);
+                if reg_num < 32 {
+                    expr_ops.push(0x50 + reg_num as u64); // DW_OP_reg0 + n
+                } else {
+                    expr_ops.push(0x90); // DW_OP_regx
+                    expr_ops.push(reg_num as u64);
+                }
+            }
+            VariableLocation::Memory {
+                address: _,
+                size: _,
+            } => {
+                // For memory variables, use empty expression to avoid LLVM validation errors
+                // LLVM doesn't accept absolute memory addresses in debug expressions
+                // The variable info will still be available, just without location tracking
+            }
+            VariableLocation::Constant(value) => {
+                // For constant variables
+                if let Ok(const_val) = value.parse::<i64>() {
+                    if const_val >= 0 && const_val <= 31 {
+                        expr_ops.push(0x30 + const_val as u64); // DW_OP_lit0 + n
+                    } else {
+                        expr_ops.push(0x10); // DW_OP_consts
+                        expr_ops.push(const_val as u64);
+                    }
+                }
+            }
+        }
+
+        // Create the debug expression (only if we have operations)
+        if expr_ops.is_empty() {
+            Ok(ptr::null_mut())
+        } else {
+            let expr = llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
+                dwarf_builder.get_builder(),
+                expr_ops.as_mut_ptr() as *mut u64,
+                expr_ops.len(),
+            );
+            Ok(expr)
+        }
+    }
+
+    /// Parse PTX register name to get register number (static version)
+    fn parse_ptx_register_number_static(reg_name: &str) -> u32 {
+        // Extract register number from PTX register names like %r0, %f1, etc.
+        if let Some(num_part) = reg_name
+            .strip_prefix('%')
+            .and_then(|s| s.chars().skip(1).collect::<String>().parse::<u32>().ok())
+        {
+            num_part
+        } else {
+            0 // Default to register 0
+        }
+    }
+
     fn emit_label_initial(&mut self, label: SpirvWord) {
         let block = unsafe {
             LLVMAppendBasicBlockInContext(

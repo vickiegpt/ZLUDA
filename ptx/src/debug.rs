@@ -234,31 +234,237 @@ impl PtxDwarfBuilder {
         Ok(di_function)
     }
 
-    /// Create variable debug info
+    /// Create variable debug info with enhanced PTX variable and memory address tracking
     pub unsafe fn create_variable_debug_info(
         &mut self,
         name: &str,
         line: u32,
         var_type: LLVMMetadataRef,
-        _location: &VariableLocation,
+        location: &VariableLocation,
     ) -> Result<LLVMMetadataRef, String> {
         let name_cstr = CString::new(name).map_err(|_| "Invalid variable name")?;
 
-        let di_variable = LLVMDIBuilderCreateAutoVariable(
-            self.di_builder,
-            self.current_scope,
-            name_cstr.as_ptr(),
-            name_cstr.as_bytes().len(),
-            self.file,
-            line,
-            var_type,
-            1, // always preserve
-            0, // flags
-            0, // align in bits
-        );
+        // Create enhanced variable with PTX-specific attributes based on location
+        let di_variable = match location {
+            VariableLocation::Memory { address, size } => {
+                // Create memory-based variable with address annotation
+                let var = LLVMDIBuilderCreateAutoVariable(
+                    self.di_builder,
+                    self.current_scope,
+                    name_cstr.as_ptr(),
+                    name_cstr.as_bytes().len(),
+                    self.file,
+                    line,
+                    var_type,
+                    1, // always preserve
+                    0, // flags
+                    0, // align in bits
+                );
+
+                // Create and add mapping for memory variable
+                self.add_memory_variable_mapping(name, line, *address, *size)?;
+                var
+            }
+            VariableLocation::Register(reg_name) => {
+                // Create register-based variable with register annotation
+                let var = LLVMDIBuilderCreateAutoVariable(
+                    self.di_builder,
+                    self.current_scope,
+                    name_cstr.as_ptr(),
+                    name_cstr.as_bytes().len(),
+                    self.file,
+                    line,
+                    var_type,
+                    1, // always preserve
+                    0, // flags
+                    0, // align in bits
+                );
+
+                // Create and add mapping for register variable
+                self.add_register_variable_mapping(name, line, reg_name)?;
+                var
+            }
+            VariableLocation::Constant(value) => {
+                // Create constant variable
+                let var = LLVMDIBuilderCreateAutoVariable(
+                    self.di_builder,
+                    self.current_scope,
+                    name_cstr.as_ptr(),
+                    name_cstr.as_bytes().len(),
+                    self.file,
+                    line,
+                    var_type,
+                    1, // always preserve
+                    0, // flags
+                    0, // align in bits
+                );
+
+                // Create and add mapping for constant variable
+                self.add_constant_variable_mapping(name, line, value)?;
+                var
+            }
+        };
 
         self.variable_counter += 1;
         Ok(di_variable)
+    }
+
+    /// Add memory variable mapping with address tracking
+    fn add_memory_variable_mapping(
+        &mut self,
+        var_name: &str,
+        line: u32,
+        address: u64,
+        size: u32,
+    ) -> Result<(), String> {
+        let ptx_location = PtxSourceLocation {
+            file: "kernel.ptx".to_string(),
+            line,
+            column: 0,
+            instruction_offset: 0,
+        };
+
+        let mut variable_mappings = HashMap::new();
+        variable_mappings.insert(
+            var_name.to_string(),
+            VariableLocation::Memory { address, size },
+        );
+
+        // Create target instruction with memory address information
+        let target_instruction = TargetInstruction::IntelSpirv {
+            instruction: format!("OpVariable_{}", var_name),
+            opcode: 0x3B, // OpVariable in SPIR-V
+            operands: vec![
+                format!("ptr_0x{:016x}", address),
+                format!("size_{}", size),
+                format!("type_memory"),
+                format!("storage_class_function"),
+            ],
+        };
+
+        let mapping_entry = DwarfMappingEntry {
+            ptx_location,
+            target_instructions: vec![target_instruction],
+            variable_mappings,
+            scope_id: self.variable_counter,
+        };
+
+        self.source_mappings.push(mapping_entry);
+        Ok(())
+    }
+
+    /// Add register variable mapping with register tracking
+    fn add_register_variable_mapping(
+        &mut self,
+        var_name: &str,
+        line: u32,
+        reg_name: &str,
+    ) -> Result<(), String> {
+        let ptx_location = PtxSourceLocation {
+            file: "kernel.ptx".to_string(),
+            line,
+            column: 0,
+            instruction_offset: 0,
+        };
+
+        let mut variable_mappings = HashMap::new();
+        variable_mappings.insert(
+            var_name.to_string(),
+            VariableLocation::Register(reg_name.to_string()),
+        );
+
+        // Create target instruction with register information
+        let target_instruction = TargetInstruction::IntelSpirv {
+            instruction: format!("OpLoad_{}", var_name),
+            opcode: 0x3D, // OpLoad in SPIR-V
+            operands: vec![
+                format!("reg_{}", reg_name),
+                format!("type_register"),
+                self.parse_register_type(reg_name),
+            ],
+        };
+
+        let mapping_entry = DwarfMappingEntry {
+            ptx_location,
+            target_instructions: vec![target_instruction],
+            variable_mappings,
+            scope_id: self.variable_counter,
+        };
+
+        self.source_mappings.push(mapping_entry);
+        Ok(())
+    }
+
+    /// Add constant variable mapping
+    fn add_constant_variable_mapping(
+        &mut self,
+        var_name: &str,
+        line: u32,
+        value: &str,
+    ) -> Result<(), String> {
+        let ptx_location = PtxSourceLocation {
+            file: "kernel.ptx".to_string(),
+            line,
+            column: 0,
+            instruction_offset: 0,
+        };
+
+        let mut variable_mappings = HashMap::new();
+        variable_mappings.insert(
+            var_name.to_string(),
+            VariableLocation::Constant(value.to_string()),
+        );
+
+        // Create target instruction with constant information
+        let target_instruction = TargetInstruction::IntelSpirv {
+            instruction: format!("OpConstant_{}", var_name),
+            opcode: 0x2B, // OpConstant in SPIR-V
+            operands: vec![
+                format!("value_{}", value),
+                format!("type_constant"),
+                self.parse_constant_type(value),
+            ],
+        };
+
+        let mapping_entry = DwarfMappingEntry {
+            ptx_location,
+            target_instructions: vec![target_instruction],
+            variable_mappings,
+            scope_id: self.variable_counter,
+        };
+
+        self.source_mappings.push(mapping_entry);
+        Ok(())
+    }
+
+    /// Parse PTX register type from register name
+    fn parse_register_type(&self, reg_name: &str) -> String {
+        if reg_name.starts_with("%r") {
+            "int32".to_string()
+        } else if reg_name.starts_with("%f") {
+            "float32".to_string()
+        } else if reg_name.starts_with("%d") {
+            "float64".to_string()
+        } else if reg_name.starts_with("%p") {
+            "predicate".to_string()
+        } else if reg_name.starts_with("%h") {
+            "int16".to_string()
+        } else if reg_name.starts_with("%c") {
+            "int8".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    /// Parse constant type from value
+    fn parse_constant_type(&self, value: &str) -> String {
+        if value.contains('.') {
+            "float".to_string()
+        } else if value.starts_with('-') || value.parse::<i64>().is_ok() {
+            "integer".to_string()
+        } else {
+            "string".to_string()
+        }
     }
 
     /// Create basic type debug info (for PTX types)
