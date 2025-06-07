@@ -77,7 +77,7 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
             parameter_values: HashMap::new(),
 
             // Initialize debug info
-            debug_enabled: true,
+            debug_enabled: false,
             current_file: "input.ptx".to_string(),
             current_line: 1,
             debug_locations: Vec::new(),

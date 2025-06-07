@@ -13,7 +13,7 @@ if [[ "$LLVM_IR_FILE" == *.ll ]]; then
   cp "$LLVM_IR_FILE" "$TEMP_LL_FILE"
 else
   # Disassemble the LLVM IR
-  llvm-dis-18 "$LLVM_IR_FILE" -o "$TEMP_LL_FILE"
+  llvm-dis-20 "$LLVM_IR_FILE" -o "$TEMP_LL_FILE"
 fi
 # Fix call
 # Fix address spaces - ensure all global variables have explicit address space 0
@@ -48,7 +48,7 @@ sed -i 's/%"75" = addrspacecast ptr addrspace(4) %2 to ptr addrspace(4)/%"75" = 
 
 # Reassemble
 TEMP_BC_FILE="/tmp/temp$STRIP_NAME.bc"
-llvm-as-18 "$TEMP_LL_FILE" -o "$TEMP_BC_FILE"
+llvm-as-20 "$TEMP_LL_FILE" -o "$TEMP_BC_FILE"
 
 # 将库文件转换为文本格式，避免属性组不兼容问题
 LIB_FILE="/home/try/Documents/ZLUDA/ptx/lib/zluda_ptx_ze_impl.bc"
@@ -59,4 +59,4 @@ echo /opt/intel/oneapi/2025.1/bin/compiler/llvm-link "$LIB_FILE" "$TEMP_BC_FILE"
 
 /opt/intel/oneapi/2025.1/bin/compiler/llvm-link "$LIB_FILE" "$TEMP_BC_FILE" -o "$COMBINED_BC_FILE" 
 # 使用合并后的文件生成SPIR-V
-/opt/intel/oneapi/2025.1/bin/compiler/llvm-spirv "$COMBINED_BC_FILE" -o "$SPIRV_FILE"  --spirv-ext=+all,-SPV_KHR_untyped_pointers
+/opt/intel/oneapi/2025.1/bin/compiler/llvm-spirv "$COMBINED_BC_FILE" -o "$SPIRV_FILE"  --spirv-ext=+all,-SPV_KHR_untyped_pointers --spirv-debug 

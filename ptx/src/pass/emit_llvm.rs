@@ -220,6 +220,28 @@ impl Deref for MemoryBuffer {
     }
 }
 
+// Declare debug intrinsics at module level to ensure proper LLVM IR generation
+fn declare_debug_intrinsics(context: &Context, module: &Module) -> Result<(), TranslateError> {
+    unsafe {
+        let ctx = context.get();
+        let mod_ref = module.get();
+
+        // Declare llvm.dbg.declare intrinsic
+        let intrinsic_name = c"llvm.dbg.declare";
+        let existing_fn = LLVMGetNamedFunction(mod_ref, intrinsic_name.as_ptr());
+
+        if existing_fn.is_null() {
+            let void_type = LLVMVoidTypeInContext(ctx);
+            let metadata_type = LLVMMetadataTypeInContext(ctx);
+            let param_types = [metadata_type, metadata_type, metadata_type];
+            let fn_type =
+                LLVMFunctionType(void_type, param_types.as_ptr() as *mut LLVMTypeRef, 3, 0);
+            LLVMAddFunction(mod_ref, intrinsic_name.as_ptr(), fn_type);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn run<'input>(
     id_defs: GlobalStringIdentResolver2<'input>,
     directives: Vec<Directive2<'input, ast::Instruction<SpirvWord>, SpirvWord>>,
@@ -231,8 +253,8 @@ pub(super) fn run<'input>(
     let mut emit_ctx = ModuleEmitContext::new(&context, &module, &id_defs);
     let mut kernel_entries = Vec::new();
 
-    // Initialize detailed debug info
-    // emit_ctx.initialize_debug_info("compiled_kernel.ptx")?;
+    // Temporarily disable debug intrinsics declaration
+    declare_debug_intrinsics(&context, &module)?;
 
     // Create the main debug context properly
     let mut emit_ctx = ModuleEmitContext::new(&context, &module, &id_defs);
@@ -247,7 +269,7 @@ pub(super) fn run<'input>(
             eprintln!("Warning: Failed to initialize debug info: {}", e);
         }
     }
-
+    
     for directive in directives {
         match directive {
             Directive2::Variable(linking, variable) => emit_ctx.emit_global(linking, variable)?,
@@ -312,10 +334,7 @@ pub(super) fn run<'input>(
         }
     }
 
-    // Finalize debug information before module verification
-    unsafe {
-        emit_ctx.debug_context.finalize_debug_info();
-    }
+    // Debug information finalization disabled
 
     if let Err(err) = module.verify() {
         return Err(TranslateError::LLVMValidationError(format!("{:?}", err)));
@@ -367,19 +386,8 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             current_function_di: None,
         };
 
-        // Initialize debug information
-        unsafe {
-            // Use a default source file name if not available
-            let source_file = "ptx_compiled_kernel.ptx";
-
-            // Initialize debug info with proper metadata
-            if let Err(e) =
-                ctx.debug_context
-                    .initialize_debug_info(context.get(), module.get(), source_file)
-            {
-                eprintln!("Warning: Failed to initialize debug info: {}", e);
-            }
-        }
+        // Debug information initialization is temporarily disabled
+        // to avoid SPIR-V validation errors
 
         ctx
     }
@@ -406,11 +414,13 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
     }
 
     fn kernel_call_convention() -> u32 {
-        LLVMCallConv::LLVMAMDGPUKERNELCallConv as u32
+        // Use SPIR calling convention for kernels in SPIR-V
+        LLVMCallConv::LLVMSPIRKERNELCallConv as u32
     }
 
     fn func_call_convention() -> u32 {
-        LLVMCallConv::LLVMCCallConv as u32
+        // Use SPIR function calling convention for regular functions in SPIR-V
+        LLVMCallConv::LLVMSPIRFUNCCallConv as u32
     }
 
     fn emit_method(
@@ -1020,9 +1030,9 @@ impl<'a> MethodEmitContext<'a> {
             unsafe { LLVMSetAlignment(alloca, align) };
         }
 
-        // Add debug information for the variable
-        let var_name = format!("var_{}", var.name.0); // Generate a simple name
-        self.add_variable_debug_info(&var, alloca, &var_name)?;
+        // Add debug information for the variable using proper intrinsic calls
+        let var_name = format!("var_{}", var.name.0);
+        self.emit_debug_declare_intrinsic(&var, alloca, &var_name)?;
 
         if !var.array_init.is_empty() {
             todo!()
@@ -1030,7 +1040,7 @@ impl<'a> MethodEmitContext<'a> {
         Ok(())
     }
 
-    fn add_variable_debug_info(
+    fn emit_debug_declare_intrinsic(
         &mut self,
         var: &ast::Variable<SpirvWord>,
         alloca: LLVMValueRef,
