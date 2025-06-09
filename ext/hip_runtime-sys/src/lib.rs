@@ -4638,7 +4638,7 @@ extern "C" {
  @bug HCC always returns 0 for l2CacheSize
 
  Populates hipGetDeviceProperties with information for the specified device.*/
-    pub fn hipGetDevicePropertiesR0600(
+    pub fn hipGetDeviceProperties(
         prop: *mut hipDeviceProp_tR0600,
         deviceId: ::core::ffi::c_int,
     ) -> hipError_t;

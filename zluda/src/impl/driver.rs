@@ -100,7 +100,7 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
                 devices: (0..device_count)
                     .map(|i| {
                         let mut props = unsafe { std::mem::zeroed() };
-                        unsafe { hipGetDevicePropertiesR0600(&mut props, i).unwrap() };
+                        unsafe { hipGetDeviceProperties(&mut props, i).unwrap() };
                         Ok::<_, CUerror>(Device {
                             _comgr_isa: CStr::from_bytes_until_nul(cast_slice(
                                 &props.gcnArchName[..],

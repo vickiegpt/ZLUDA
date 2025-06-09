@@ -416,7 +416,7 @@ pub(crate) fn push(ctx: CUcontext, device: hipDevice_t) {
 #[cfg(feature = "amd")]
 pub(crate) fn get_device_properties(device: hipDevice_t) -> Result<hipDeviceArch_t, CUerror> {
     let mut props = unsafe { std::mem::zeroed() };
-    unsafe { hipGetDevicePropertiesR0600(&mut props, device).unwrap() };
+    unsafe { hipGetDeviceProperties(&mut props, device).unwrap() };
     Ok(props.arch)
 }
 

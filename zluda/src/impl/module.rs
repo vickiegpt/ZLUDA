@@ -95,7 +95,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     let mut dev = 0;
     unsafe { hipCtxGetDevice(&mut dev).unwrap() };
     let mut props = unsafe { std::mem::zeroed() };
-    unsafe { hipGetDevicePropertiesR0600(&mut props, dev).unwrap() };
+    unsafe { hipGetDeviceProperties(&mut props, dev).unwrap() };
     let elf_module = comgr::compile_bitcode(
         unsafe { CStr::from_ptr(props.gcnArchName.as_ptr()) },
         &*llvm_module.llvm_ir,

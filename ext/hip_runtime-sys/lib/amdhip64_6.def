@@ -246,8 +246,6 @@ hipGetDevice
 hipGetDeviceCount
 hipGetDeviceFlags
 hipGetDeviceProperties
-hipGetDevicePropertiesR0000
-hipGetDevicePropertiesR0600
 hipGetErrorName
 hipGetErrorString
 hipGetLastError

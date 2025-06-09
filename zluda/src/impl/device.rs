@@ -178,7 +178,7 @@ pub(crate) fn get_attribute(
         f: impl FnOnce(&hipDeviceProp_tR0600) -> i32,
     ) -> hipError_t {
         let mut props = unsafe { mem::zeroed() };
-        unsafe { hipGetDevicePropertiesR0600(&mut props, dev_idx)? };
+        unsafe { hipGetDeviceProperties(&mut props, dev_idx)? };
         *pi = f(&props);
         Ok(())
     }
@@ -766,7 +766,7 @@ pub(crate) fn get_luid(
             .ok_or(hipErrorCode_t::InvalidValue)
     }?;
     let mut properties = unsafe { mem::zeroed() };
-    unsafe { hipGetDevicePropertiesR0600(&mut properties, dev) }?;
+    unsafe { hipGetDeviceProperties(&mut properties, dev) }?;
     *luid = properties.luid;
     *device_node_mask = properties.luidDeviceNodeMask;
     Ok(())
@@ -898,7 +898,7 @@ pub(crate) fn total_mem_v2(bytes: *mut usize, dev: ze_device_handle_t) -> ze_res
 #[cfg(feature = "amd")]
 pub(crate) fn get_properties(prop: &mut CUdevprop, dev: hipDevice_t) -> hipError_t {
     let mut hip_props = unsafe { mem::zeroed() };
-    unsafe { hipGetDevicePropertiesR0600(&mut hip_props, dev) }?;
+    unsafe { hipGetDeviceProperties(&mut hip_props, dev) }?;
     prop.maxThreadsPerBlock = hip_props.maxThreadsPerBlock;
     prop.maxThreadsDim = hip_props.maxThreadsDim;
     prop.maxGridSize = hip_props.maxGridSize;

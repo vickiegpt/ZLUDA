@@ -26,6 +26,15 @@ macro_rules! test_ptx {
                 test_hip_assert(stringify!($fn_name), ptx, &input, &mut output)
             }
         }
+        paste::item! {
+            #[test]
+            fn [<$fn_name _cuda>]() -> Result<(), Box<dyn std::error::Error>> {
+                let ptx = include_str!(concat!(stringify!($fn_name), ".ptx"));
+                let input = $input;
+                let mut output = $output;
+                test_cuda_assert(stringify!($fn_name), ptx, &input, &mut output)
+            }
+        }
     };
 
     ($fn_name:ident) => {};
@@ -363,7 +372,7 @@ fn run_hip<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Def
         let mut stream = unsafe { mem::zeroed() };
         unsafe { hipStreamCreate(&mut stream) }.unwrap();
         let mut dev_props = unsafe { mem::zeroed() };
-        unsafe { hipGetDevicePropertiesR0600(&mut dev_props, dev) }.unwrap();
+        unsafe { hipGetDeviceProperties(&mut dev_props, dev) }.unwrap();
         let elf_module = comgr::compile_bitcode(
             unsafe { CStr::from_ptr(dev_props.gcnArchName.as_ptr()) },
             &*module.llvm_ir,
