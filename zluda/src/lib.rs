@@ -1,5 +1,3 @@
-#![feature(str_from_raw_parts)]
-
 pub(crate) mod r#impl;
 // Import necessary for FromCuda
 use crate::r#impl::FromCuda;

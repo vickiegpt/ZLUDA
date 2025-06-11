@@ -176,6 +176,166 @@ impl PtxDwarfBuilder {
         self.source_mappings.push(mapping);
     }
 
+    /// Create debug types for PTX scalar types
+    pub unsafe fn create_ptx_debug_type(&self, ptx_type: &ptx_parser::ScalarType) -> LLVMMetadataRef {
+        let (name, size_bits, encoding) = match ptx_type {
+            ptx_parser::ScalarType::U8 => ("u8", 8, 7), // DW_ATE_unsigned
+            ptx_parser::ScalarType::U16 => ("u16", 16, 7), // DW_ATE_unsigned
+            ptx_parser::ScalarType::U32 => ("u32", 32, 7), // DW_ATE_unsigned
+            ptx_parser::ScalarType::U64 => ("u64", 64, 7), // DW_ATE_unsigned
+            ptx_parser::ScalarType::S8 => ("s8", 8, 5), // DW_ATE_signed
+            ptx_parser::ScalarType::S16 => ("s16", 16, 5), // DW_ATE_signed
+            ptx_parser::ScalarType::S32 => ("s32", 32, 5), // DW_ATE_signed
+            ptx_parser::ScalarType::S64 => ("s64", 64, 5), // DW_ATE_signed
+            ptx_parser::ScalarType::F16 => ("f16", 16, 4), // DW_ATE_float
+            ptx_parser::ScalarType::F32 => ("f32", 32, 4), // DW_ATE_float
+            ptx_parser::ScalarType::F64 => ("f64", 64, 4), // DW_ATE_float
+            ptx_parser::ScalarType::Pred => ("pred", 1, 2), // DW_ATE_boolean
+            ptx_parser::ScalarType::B8 => ("b8", 8, 7), // DW_ATE_unsigned
+            ptx_parser::ScalarType::B16 => ("b16", 16, 7), // DW_ATE_unsigned
+            ptx_parser::ScalarType::B32 => ("b32", 32, 7), // DW_ATE_unsigned
+            ptx_parser::ScalarType::B64 => ("b64", 64, 7), // DW_ATE_unsigned
+            _ => ("unknown", 32, 7), // Default fallback
+        };
+        
+        let name_cstr = CString::new(name).unwrap();
+        LLVMDIBuilderCreateBasicType(
+            self.di_builder,
+            name_cstr.as_ptr(),
+            name.len(),
+            size_bits,
+            encoding,
+            0, // flags
+        )
+    }
+
+    /// Create debug info for function parameters
+    pub unsafe fn create_parameter_debug_info(
+        &self,
+        function_scope: LLVMMetadataRef,
+        param_name: &str,
+        param_type: &ptx_parser::ScalarType,
+        arg_num: u32,
+        line: u32,
+    ) -> LLVMMetadataRef {
+        let param_name_cstr = CString::new(param_name).unwrap();
+        let param_debug_type = self.create_ptx_debug_type(param_type);
+        
+        LLVMDIBuilderCreateParameterVariable(
+            self.di_builder,
+            function_scope,
+            param_name_cstr.as_ptr(),
+            param_name.len(),
+            arg_num,
+            self.file,
+            line,
+            param_debug_type,
+            1, // alwaysPreserve
+            0, // flags
+        )
+    }
+
+    /// Create debug info for local variables
+    pub unsafe fn create_local_variable_debug_info(
+        &self,
+        scope: LLVMMetadataRef,
+        var_name: &str,
+        var_type: &ptx_parser::ScalarType,
+        line: u32,
+    ) -> LLVMMetadataRef {
+        let var_name_cstr = CString::new(var_name).unwrap();
+        let var_debug_type = self.create_ptx_debug_type(var_type);
+        
+        LLVMDIBuilderCreateAutoVariable(
+            self.di_builder,
+            scope,
+            var_name_cstr.as_ptr(),
+            var_name.len(),
+            self.file,
+            line,
+            var_debug_type,
+            1, // alwaysPreserve
+            0, // flags
+            0, // alignInBits
+        )
+    }
+
+    /// Create lexical block for improved scope tracking
+    pub unsafe fn create_lexical_block(
+        &self,
+        parent_scope: LLVMMetadataRef,
+        line: u32,
+        column: u32,
+    ) -> LLVMMetadataRef {
+        LLVMDIBuilderCreateLexicalBlock(
+            self.di_builder,
+            parent_scope,
+            self.file,
+            line,
+            column,
+        )
+    }
+
+    /// Create function debug info with parameters
+    pub unsafe fn create_function_debug_info(
+        &self,
+        function_name: &str,
+        linkage_name: &str,
+        line: u32,
+        is_definition: bool,
+        param_types: &[ptx_parser::ScalarType],
+    ) -> LLVMMetadataRef {
+        let function_name_cstr = CString::new(function_name).unwrap();
+        let linkage_name_cstr = CString::new(linkage_name).unwrap();
+        
+        // Create function type
+        let void_type = LLVMDIBuilderCreateBasicType(
+            self.di_builder,
+            c"void".as_ptr(),
+            4,
+            0,
+            0,
+            0,
+        );
+        
+        // Create parameter types array
+        let mut param_debug_types = vec![void_type]; // Return type first
+        for param_type in param_types {
+            param_debug_types.push(self.create_ptx_debug_type(param_type));
+        }
+        
+        let function_type = LLVMDIBuilderCreateSubroutineType(
+            self.di_builder,
+            self.file,
+            param_debug_types.as_mut_ptr(),
+            param_debug_types.len() as u32,
+            0, // flags
+        );
+        
+        let sp_flags = if is_definition {
+            0x40 // DISPFlagDefinition
+        } else {
+            0
+        };
+        
+        LLVMDIBuilderCreateFunction(
+            self.di_builder,
+            self.file, // scope
+            function_name_cstr.as_ptr(),
+            function_name.len(),
+            linkage_name_cstr.as_ptr(),
+            linkage_name.len(),
+            self.file,
+            line,
+            function_type,
+            0, // isLocalToUnit
+            is_definition as i32,
+            line, // scopeLine
+            0, // flags
+            0, // isOptimized
+        )
+    }
+
     /// Create debug location for PTX source line
     pub unsafe fn create_debug_location(
         &self,
@@ -200,39 +360,6 @@ impl PtxDwarfBuilder {
         Ok(debug_loc)
     }
 
-    /// Create a function debug info entry
-    pub unsafe fn create_function_debug_info(
-        &mut self,
-        function_name: &str,
-        linkage_name: &str,
-        line: u32,
-        function_type: LLVMMetadataRef,
-        is_local_to_unit: bool,
-        is_definition: bool,
-    ) -> Result<LLVMMetadataRef, String> {
-        let name_cstr = CString::new(function_name).map_err(|_| "Invalid function name")?;
-        let linkage_cstr = CString::new(linkage_name).map_err(|_| "Invalid linkage name")?;
-
-        let di_function = LLVMDIBuilderCreateFunction(
-            self.di_builder,
-            self.file, // scope
-            name_cstr.as_ptr(),
-            name_cstr.as_bytes().len(),
-            linkage_cstr.as_ptr(),
-            linkage_cstr.as_bytes().len(),
-            self.file,
-            line,
-            function_type,
-            if is_local_to_unit { 1 } else { 0 },
-            if is_definition { 1 } else { 0 },
-            line, // scope line
-            0,    // flags
-            0,    // is optimized
-        );
-
-        self.current_scope = di_function;
-        Ok(di_function)
-    }
 
     /// Create variable debug info with enhanced PTX variable and memory address tracking
     pub unsafe fn create_variable_debug_info(
@@ -241,8 +368,20 @@ impl PtxDwarfBuilder {
         line: u32,
         var_type: LLVMMetadataRef,
         location: &VariableLocation,
+        function_scope: Option<LLVMMetadataRef>,
     ) -> Result<LLVMMetadataRef, String> {
         let name_cstr = CString::new(name).map_err(|_| "Invalid variable name")?;
+
+        // Use function scope if provided, otherwise try to use current_scope only if it's a valid local scope
+        let valid_scope = function_scope.unwrap_or_else(|| {
+            // If no function scope provided, we can't create local variables safely
+            // Return null to indicate this variable should be skipped
+            ptr::null_mut()
+        });
+
+        if valid_scope.is_null() {
+            return Err("No valid function scope available for local variable".to_string());
+        }
 
         // Create enhanced variable with PTX-specific attributes based on location
         let di_variable = match location {
@@ -250,7 +389,7 @@ impl PtxDwarfBuilder {
                 // Create memory-based variable with address annotation
                 let var = LLVMDIBuilderCreateAutoVariable(
                     self.di_builder,
-                    self.current_scope,
+                    valid_scope,
                     name_cstr.as_ptr(),
                     name_cstr.as_bytes().len(),
                     self.file,
@@ -269,7 +408,7 @@ impl PtxDwarfBuilder {
                 // Create register-based variable with register annotation
                 let var = LLVMDIBuilderCreateAutoVariable(
                     self.di_builder,
-                    self.current_scope,
+                    valid_scope,
                     name_cstr.as_ptr(),
                     name_cstr.as_bytes().len(),
                     self.file,
@@ -288,7 +427,7 @@ impl PtxDwarfBuilder {
                 // Create constant variable
                 let var = LLVMDIBuilderCreateAutoVariable(
                     self.di_builder,
-                    self.current_scope,
+                    valid_scope,
                     name_cstr.as_ptr(),
                     name_cstr.as_bytes().len(),
                     self.file,
@@ -516,11 +655,6 @@ impl PtxDwarfBuilder {
         ))
     }
 
-    /// Finalize debug info generation
-    pub unsafe fn finalize(&self) {
-        LLVMDIBuilderFinalize(self.di_builder);
-    }
-
     /// Create a compile unit for the module
     pub unsafe fn create_compile_unit(&mut self) -> Result<(), String> {
         // The compile unit is already created in the constructor, so this is a no-op
@@ -598,6 +732,13 @@ impl PtxDwarfBuilder {
     /// Get the underlying DIBuilder
     pub fn get_builder(&self) -> *mut llvm_zluda::LLVMOpaqueDIBuilder {
         self.di_builder
+    }
+
+    /// Finalize debug information generation
+    pub unsafe fn finalize(&self) {
+        if !self.di_builder.is_null() {
+            LLVMDIBuilderFinalize(self.di_builder);
+        }
     }
 
     /// Finalize the compilation unit

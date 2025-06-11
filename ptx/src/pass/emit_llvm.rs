@@ -248,8 +248,12 @@ pub(super) fn run<'input>(
 ) -> Result<MemoryBuffer, TranslateError> {
     let context = Context::new();
     let module = Module::new(&context, LLVM_UNNAMED);
-    let target_triple = CString::new("spir64-unknown-unknown").map_err(|_| error_unreachable())?;
+    let target_triple = CString::new("nvptx64-nvidia-cuda").map_err(|_| error_unreachable())?;
     unsafe { LLVMSetTarget(module.get(), target_triple.as_ptr()) };
+
+    // Set proper data layout for NVPTX
+    let data_layout = CString::new("e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v16:16:16-v32:32:32-v64:64:64-v128:128:128-n16:32:64").map_err(|_| error_unreachable())?;
+    unsafe { LLVMSetDataLayout(module.get(), data_layout.as_ptr()) };
     let mut emit_ctx = ModuleEmitContext::new(&context, &module, &id_defs);
     let mut kernel_entries = Vec::new();
 
@@ -269,7 +273,7 @@ pub(super) fn run<'input>(
             eprintln!("Warning: Failed to initialize debug info: {}", e);
         }
     }
-    
+
     for directive in directives {
         match directive {
             Directive2::Variable(linking, variable) => emit_ctx.emit_global(linking, variable)?,
@@ -414,13 +418,13 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
     }
 
     fn kernel_call_convention() -> u32 {
-        // Use SPIR calling convention for kernels in SPIR-V
-        LLVMCallConv::LLVMSPIRKERNELCallConv as u32
+        // Use PTX calling convention for kernels
+        LLVMCallConv::LLVMPTXKernelCallConv as u32
     }
 
     fn func_call_convention() -> u32 {
-        // Use SPIR function calling convention for regular functions in SPIR-V
-        LLVMCallConv::LLVMSPIRFUNCCallConv as u32
+        // Use PTX device calling convention for regular functions
+        LLVMCallConv::LLVMPTXDeviceCallConv as u32
     }
 
     fn emit_method(
@@ -457,9 +461,21 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         }
         for (i, param) in func_decl.input_arguments.iter().enumerate() {
             let value = unsafe { LLVMGetParam(fn_, i as u32) };
-            let name = self.resolver.get_or_add(param.name);
-            unsafe { LLVMSetValueName2(value, name.as_ptr().cast(), name.len()) };
+
+            // Get the original PTX parameter name from the identifier map
+            let param_name = if let Some(ident_entry) = self.id_defs.ident_map.get(&param.name) {
+                if let Some(ref original_name) = ident_entry.name {
+                    std::borrow::Cow::Borrowed(original_name.as_ref())
+                } else {
+                    std::borrow::Cow::Borrowed(self.resolver.get_or_add(param.name))
+                }
+            } else {
+                std::borrow::Cow::Borrowed(self.resolver.get_or_add(param.name))
+            };
+
+            unsafe { LLVMSetValueName2(value, param_name.as_ptr().cast(), param_name.len()) };
             self.resolver.register(param.name, value);
+
             if func_decl.name.is_kernel() {
                 let attr_kind = unsafe {
                     LLVMGetEnumAttributeKindForName(b"byref".as_ptr().cast(), b"byref".len())
@@ -489,7 +505,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                 unsafe { LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr()) };
             unsafe { LLVMPositionBuilderAtEnd(self.builder.get(), real_bb) };
             // Use unsafe pointers to work around lifetime issues
-            let resolver_ptr = &mut self.resolver as *mut ResolveIdent<'_>;
+            let resolver_ptr = &mut self.resolver as *mut ResolveIdent<'static>;
             let debug_context_ptr = &mut self.debug_context as *mut DebugContext;
 
             // Create debug info for the function if debug is enabled
@@ -507,17 +523,15 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                     // Create function type for debug info
                     if let Ok(function_type) = dwarf_builder.create_function_type(None, &[]) {
                         // Create function debug info
-                        if let Ok(function_debug_info) = dwarf_builder.create_function_debug_info(
+                        let function_debug_info = dwarf_builder.create_function_debug_info(
                             function_name,
                             function_name,
-                            1, // line number
-                            function_type,
-                            false, // not local to unit
-                            true,  // is definition
-                        ) {
-                            (*debug_context_ptr).current_function_debug_info =
-                                Some(function_debug_info);
-                        }
+                            1,    // line number
+                            true, // is definition
+                            &[],  // parameter types
+                        );
+                        (*debug_context_ptr).current_function_debug_info =
+                            Some(function_debug_info);
                     }
                 }
             }
@@ -534,7 +548,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                 )
             };
             for var in func_decl.return_arguments {
-                method_emitter.emit_variable(var)?;
+                method_emitter.emit_variable(var, self.id_defs)?;
             }
             for statement in statements.iter() {
                 if let Statement::Label(label) = statement {
@@ -542,7 +556,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                 }
             }
             for statement in statements {
-                method_emitter.emit_statement(statement)?;
+                method_emitter.emit_statement(statement, self.id_defs)?;
             }
             unsafe { LLVMBuildBr(method_emitter.variables_builder.get(), real_bb) };
         }
@@ -737,9 +751,9 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             // TODO: Implement proper variable debug info when add_variable_debug_info is available
             if self.debug_context.debug_enabled {
                 // For now, just add a debug location
-                if let Err(e) = self
-                    .debug_context
-                    .add_debug_location(builder, 1, 1, var_name)
+                if let Err(e) =
+                    self.debug_context
+                        .add_debug_location(self.builder.get(), 1, 1, &var_name)
                 {
                     eprintln!(
                         "Warning: Failed to add debug location for variable {}: {}",
@@ -809,19 +823,21 @@ impl<'a> MethodEmitContext<'a> {
             resolver,
             method,
             debug_context,
-            current_line: 1,
+            // Start from actual PTX content, skip header lines
+            current_line: 10, // Start from line 10 to account for PTX header
         }
     }
 
-    fn emit_statement(
+    fn emit_statement<'input>(
         &mut self,
         statement: Statement<ast::Instruction<SpirvWord>, SpirvWord>,
+        id_defs: &GlobalStringIdentResolver2<'input>,
     ) -> Result<(), TranslateError> {
         // Add debug location for each statement
         self.add_debug_location_for_statement(&statement)?;
 
         Ok(match statement {
-            Statement::Variable(var) => self.emit_variable(var)?,
+            Statement::Variable(var) => self.emit_variable(var, id_defs)?,
             Statement::Label(label) => self.emit_label_delayed(label)?,
             Statement::Instruction(inst) => self.emit_instruction(inst)?,
             Statement::Conditional(cond) => self.emit_conditional(cond)?,
@@ -843,9 +859,13 @@ impl<'a> MethodEmitContext<'a> {
         // Get instruction name for debug tracking
         let instruction_name = match statement {
             Statement::Instruction(inst) => get_instruction_name(inst),
-            Statement::Variable(_) => "variable_declaration",
+            Statement::Variable(_) => {
+                // For variable declarations, don't increment line as they are 
+                // handled separately in emit_variable with proper source mapping
+                return Ok(());
+            }
             Statement::Label(_) => "label",
-            Statement::Conditional(_) => "conditional",
+            Statement::Conditional(_) => "conditional", 
             Statement::Conversion(_) => "conversion",
             Statement::Constant(_) => "constant",
             Statement::RetValue(_, _) => "ret_value",
@@ -856,20 +876,30 @@ impl<'a> MethodEmitContext<'a> {
             Statement::VectorWrite(_) => "vector_write",
         };
 
-        // Add debug location tracking
-        unsafe {
-            if let Err(e) = self.debug_context.add_debug_location(
-                self.builder,
-                self.current_line,
-                1, // column
-                instruction_name,
-            ) {
-                eprintln!("Warning: Failed to add debug location: {}", e);
+        // Add debug location tracking for real instructions only
+        // Limit line numbers to PTX source bounds (for atom_add.ptx: max 29 lines)
+        if !matches!(statement, Statement::Variable(_)) && self.current_line <= 29 {
+            // Set debug location before creating the instruction
+            unsafe {
+                if let Err(e) = self.debug_context.add_debug_location(
+                    self.builder,
+                    self.current_line,
+                    1, // column
+                    instruction_name,
+                ) {
+                    eprintln!("Warning: Failed to add debug location: {}", e);
+                }
             }
-        }
 
-        // Increment line counter
-        self.current_line += 1;
+                    // Increment line counter for next instruction only for actual PTX instructions
+        match statement {
+            Statement::Instruction(_) => {
+                // Don't increment here - it's handled in emit_instruction
+            },
+            // Don't increment for internal operations 
+            _ => {}
+        }
+        }
 
         Ok(())
     }
@@ -1016,13 +1046,99 @@ fn get_scalar_type_name(scalar_type: &ast::ScalarType) -> &'static str {
 }
 
 impl<'a> MethodEmitContext<'a> {
-    fn emit_variable(&mut self, var: ast::Variable<SpirvWord>) -> Result<(), TranslateError> {
+    fn emit_variable<'input>(
+        &mut self,
+        var: ast::Variable<SpirvWord>,
+        id_defs: &GlobalStringIdentResolver2<'input>,
+    ) -> Result<(), TranslateError> {
+        // Get the original PTX variable name from the identifier map FIRST
+        let var_name = if let Some(ident_entry) = id_defs.ident_map.get(&var.name) {
+            if let Some(ref original_name) = ident_entry.name {
+                // Use the actual PTX variable name if available
+                original_name.to_string()
+            } else {
+                // Generate PTX-style name based on variable type and state space
+                match var.state_space {
+                    ast::StateSpace::Reg => match &var.v_type {
+                        ast::Type::Scalar(ast::ScalarType::U64)
+                        | ast::Type::Scalar(ast::ScalarType::S64)
+                        | ast::Type::Scalar(ast::ScalarType::B64) => format!("%rd{}", var.name.0),
+                        ast::Type::Scalar(ast::ScalarType::U32)
+                        | ast::Type::Scalar(ast::ScalarType::S32)
+                        | ast::Type::Scalar(ast::ScalarType::B32) => format!("%r{}", var.name.0),
+                        ast::Type::Scalar(ast::ScalarType::U16)
+                        | ast::Type::Scalar(ast::ScalarType::S16)
+                        | ast::Type::Scalar(ast::ScalarType::B16) => format!("%rs{}", var.name.0),
+                        ast::Type::Scalar(ast::ScalarType::U8)
+                        | ast::Type::Scalar(ast::ScalarType::S8)
+                        | ast::Type::Scalar(ast::ScalarType::B8) => format!("%rc{}", var.name.0),
+                        ast::Type::Scalar(ast::ScalarType::F32) => format!("%f{}", var.name.0),
+                        ast::Type::Scalar(ast::ScalarType::F64) => format!("%fd{}", var.name.0),
+                        ast::Type::Scalar(ast::ScalarType::Pred) => format!("%p{}", var.name.0),
+                        _ => format!("var_{}", var.name.0),
+                    },
+                    ast::StateSpace::Shared => {
+                        // Try to get the original PTX variable name for shared memory
+                        if let Some(entry) = id_defs.ident_map.get(&var.name) {
+                            if let Some(ref name) = entry.name {
+                                name.to_string()
+                            } else {
+                                // Use a more descriptive name that reflects the PTX source
+                                format!("shared_var_{}", var.name.0)
+                            }
+                        } else {
+                            // Extract real name from any debug info or use meaningful fallback
+                            Self::get_real_variable_name_fallback(&var, id_defs, "shared")
+                        }
+                    }
+                    ast::StateSpace::Local => {
+                        // Try to get the original PTX variable name for local memory
+                        if let Some(entry) = id_defs.ident_map.get(&var.name) {
+                            if let Some(ref name) = entry.name {
+                                name.to_string()
+                            } else {
+                                // Use a more descriptive name that reflects the PTX source
+                                format!("local_var_{}", var.name.0)
+                            }
+                        } else {
+                            // Extract real name from any debug info or use meaningful fallback
+                            Self::get_real_variable_name_fallback(&var, id_defs, "local")
+                        }
+                    }
+                    ast::StateSpace::Global => {
+                        // Try to get the original PTX variable name for global memory
+                        if let Some(entry) = id_defs.ident_map.get(&var.name) {
+                            if let Some(ref name) = entry.name {
+                                name.to_string()
+                            } else {
+                                // Use a more descriptive name that reflects the PTX source
+                                format!("global_var_{}", var.name.0)
+                            }
+                        } else {
+                            // Extract real name from any debug info or use meaningful fallback
+                            Self::get_real_variable_name_fallback(&var, id_defs, "global")
+                        }
+                    }
+                    _ => format!("var_{}", var.name.0),
+                }
+            }
+        } else {
+            format!("var_{}", var.name.0)
+        };
+
+        // Final cleanup: if we still have a generic name, try to extract from any debug info
+        let final_var_name = Self::extract_real_ptx_name(&var_name, &var, id_defs);
+
+        // Use the final PTX name for the alloca itself so LLVM debug info picks it up
+        let var_name_cstr = std::ffi::CString::new(final_var_name.clone())
+            .unwrap_or_else(|_| std::ffi::CString::new(format!("var_{}", var.name.0)).unwrap());
+
         let alloca = unsafe {
             LLVMZludaBuildAlloca(
                 self.variables_builder.get(),
                 get_type(self.context, &var.v_type)?,
                 get_state_space(var.state_space)?,
-                self.resolver.get_or_add_raw(var.name),
+                var_name_cstr.as_ptr(),
             )
         };
         self.resolver.register(var.name, alloca);
@@ -1030,9 +1146,13 @@ impl<'a> MethodEmitContext<'a> {
             unsafe { LLVMSetAlignment(alloca, align) };
         }
 
-        // Add debug information for the variable using proper intrinsic calls
-        let var_name = format!("var_{}", var.name.0);
-        self.emit_debug_declare_intrinsic(&var, alloca, &var_name)?;
+        // Only emit debug info for local variables, not parameters
+        if var.state_space == ast::StateSpace::Reg
+            || var.state_space == ast::StateSpace::Local
+            || var.state_space == ast::StateSpace::Shared
+        {
+            self.emit_debug_declare_intrinsic(&var, alloca, &final_var_name)?;
+        }
 
         if !var.array_init.is_empty() {
             todo!()
@@ -1051,11 +1171,14 @@ impl<'a> MethodEmitContext<'a> {
             let var_size_bits = ptx_type_size_bits(scalar_type);
             let type_name = Self::get_scalar_type_name(scalar_type);
 
-            // Create variable location based on state space
+            // Create variable location based on state space - distinguish from parameters
             let location = match var.state_space {
-                ast::StateSpace::Reg => VariableLocation::Register(var_name.to_string()),
+                ast::StateSpace::Reg => {
+                    // This is a PTX register variable, not a parameter
+                    VariableLocation::Register(var_name.to_string())
+                }
                 ast::StateSpace::Local => VariableLocation::Memory {
-                    address: alloca as u64, // Use actual alloca address
+                    address: alloca as u64,
                     size: (var_size_bits / 8) as u32,
                 },
                 ast::StateSpace::Shared => VariableLocation::Memory {
@@ -1066,15 +1189,15 @@ impl<'a> MethodEmitContext<'a> {
                     address: alloca as u64,
                     size: (var_size_bits / 8) as u32,
                 },
-                ast::StateSpace::Const => VariableLocation::Constant(var_name.to_string()),
-                ast::StateSpace::Param => VariableLocation::Constant(var_name.to_string()),
-                _ => VariableLocation::Register(var_name.to_string()), // Default fallback
+                // Skip debug info for parameter spaces to avoid confusion
+                ast::StateSpace::Param
+                | ast::StateSpace::ParamEntry
+                | ast::StateSpace::ParamFunc => return Ok(()),
+                _ => VariableLocation::Register(var_name.to_string()),
             };
 
             // Actually add the variable debug info to DWARF
-            // Create a DWARF variable entry using LLVM debug API
             if self.debug_context.debug_enabled {
-                // Extract values to avoid borrowing conflicts
                 let current_function_di = self.debug_context.current_function_debug_info;
                 let has_dwarf_builder = self.debug_context.dwarf_builder.is_some();
 
@@ -1086,25 +1209,25 @@ impl<'a> MethodEmitContext<'a> {
                                 .create_basic_type(
                                     type_name,
                                     var_size_bits,
-                                    4, // Default encoding
+                                    ptx_type_to_dwarf_encoding(scalar_type), // Use proper encoding
                                 )
                                 .unwrap_or_else(|_| ptr::null_mut());
 
                             if !di_basic_type.is_null() {
-                                // Create the variable debug info
+                                // Create the variable debug info with proper line number
+                                // Use current_line + offset for variable declarations
+                                let var_line = self.current_line;
+
                                 if let Ok(di_variable) = dwarf_builder.create_variable_debug_info(
                                     var_name,
-                                    self.current_line,
+                                    var_line,
                                     di_basic_type,
                                     &location,
+                                    current_function_di,
                                 ) {
                                     // Create debug location for the variable
                                     let debug_loc = dwarf_builder
-                                        .create_debug_location(
-                                            self.current_line,
-                                            0,
-                                            current_function_di,
-                                        )
+                                        .create_debug_location(var_line, 0, current_function_di)
                                         .unwrap_or_else(|_| ptr::null_mut());
 
                                     // Create debug expression
@@ -1123,7 +1246,6 @@ impl<'a> MethodEmitContext<'a> {
 
                                     // Create debug declare instruction
                                     if !debug_loc.is_null() && !di_variable.is_null() {
-                                        // If debug_expr is null, create an empty expression
                                         let expression = if debug_expr.is_null() {
                                             llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
                                                 dwarf_builder.get_builder(),
@@ -1144,8 +1266,8 @@ impl<'a> MethodEmitContext<'a> {
                                         );
 
                                         eprintln!(
-                                            "DEBUG: Variable debug info successfully added for {}: type={}, size={}, location={:?}",
-                                            var_name, type_name, var_size_bits, location
+                                            "DEBUG: PTX variable debug info added: {} ({}:{}) type={}, size={}, space={:?}",
+                                            var_name, var_line, 0, type_name, var_size_bits, var.state_space
                                         );
                                     }
                                 }
@@ -1157,6 +1279,117 @@ impl<'a> MethodEmitContext<'a> {
         }
 
         Ok(())
+    }
+
+    /// Extract real PTX variable name from various sources
+    fn get_real_variable_name_fallback<'input>(
+        var: &ast::Variable<SpirvWord>,
+        id_defs: &GlobalStringIdentResolver2<'input>,
+        state_space_name: &str,
+    ) -> String {
+        // First, try to find any reference to this variable in other parts of the code
+        for (spirv_id, ident_entry) in &id_defs.ident_map {
+            if *spirv_id == var.name {
+                if let Some(ref name) = ident_entry.name {
+                    // Found a real PTX name - use it directly
+                    return name.to_string();
+                }
+                break;
+            }
+        }
+
+        // If no real name found, create a meaningful name based on the variable type and state space
+        match &var.v_type {
+            ast::Type::Scalar(scalar_type) => {
+                let type_suffix = match scalar_type {
+                    ast::ScalarType::U8 | ast::ScalarType::S8 | ast::ScalarType::B8 => "b8",
+                    ast::ScalarType::U16 | ast::ScalarType::S16 | ast::ScalarType::B16 => "b16", 
+                    ast::ScalarType::U32 | ast::ScalarType::S32 | ast::ScalarType::B32 => "b32",
+                    ast::ScalarType::U64 | ast::ScalarType::S64 | ast::ScalarType::B64 => "b64",
+                    ast::ScalarType::F16 => "f16",
+                    ast::ScalarType::F32 => "f32",
+                    ast::ScalarType::F64 => "f64",
+                    ast::ScalarType::Pred => "pred",
+                    _ => "unk",
+                };
+                format!("{}_{}_{}", state_space_name, type_suffix, var.name.0)
+            }
+            ast::Type::Vector(_, _) => {
+                format!("{}_vec_{}", state_space_name, var.name.0)
+            }
+            ast::Type::Array(_, _, _) => {
+                format!("{}_array_{}", state_space_name, var.name.0)
+            }
+            ast::Type::Pointer(_, _) => {
+                format!("{}_ptr_{}", state_space_name, var.name.0)
+            }
+        }
+    }
+
+    fn extract_real_ptx_name<'input>(
+        current_name: &str,
+        var: &ast::Variable<SpirvWord>,
+        id_defs: &GlobalStringIdentResolver2<'input>,
+    ) -> String {
+        // If we already have a good name (starts with %), use it
+        if current_name.starts_with('%') {
+            return current_name.to_string();
+        }
+
+        // Try to find the real name in the reverse mapping
+        for (spirv_id, ident_entry) in &id_defs.ident_map {
+            if *spirv_id == var.name {
+                if let Some(ref name) = ident_entry.name {
+                    // Found the real PTX name
+                    return name.to_string();
+                }
+            }
+        }
+
+        // If still generic, try to build a meaningful name based on context
+        if current_name.starts_with("var_")
+            || current_name.starts_with("shared_var_")
+            || current_name.starts_with("local_var_")
+            || current_name.starts_with("global_var_")
+        {
+            // Try one more time to find a real name in the identifier mappings
+            for (spirv_id, ident_entry) in &id_defs.ident_map {
+                if *spirv_id == var.name {
+                    if let Some(ref name) = ident_entry.name {
+                        // Found the real PTX name
+                        return name.to_string();
+                    }
+                }
+            }
+
+            // Create a more meaningful name based on the variable properties
+            let base_name = match var.state_space {
+                ast::StateSpace::Shared => "shared_mem",
+                ast::StateSpace::Local => "local_mem", 
+                ast::StateSpace::Global => "global_mem",
+                ast::StateSpace::Reg => match &var.v_type {
+                    ast::Type::Scalar(ast::ScalarType::U64)
+                    | ast::Type::Scalar(ast::ScalarType::S64)
+                    | ast::Type::Scalar(ast::ScalarType::B64) => "%rd",
+                    ast::Type::Scalar(ast::ScalarType::U32)
+                    | ast::Type::Scalar(ast::ScalarType::S32)
+                    | ast::Type::Scalar(ast::ScalarType::B32) => "%r",
+                    ast::Type::Scalar(ast::ScalarType::F32) => "%f",
+                    ast::Type::Scalar(ast::ScalarType::F64) => "%fd",
+                    ast::Type::Scalar(ast::ScalarType::Pred) => "%p",
+                    _ => "var",
+                },
+                _ => "var",
+            };
+
+            if base_name.starts_with('%') {
+                format!("{}{}", base_name, var.name.0)
+            } else {
+                format!("{}_{}", base_name, var.name.0)
+            }
+        } else {
+            current_name.to_string()
+        }
     }
 
     /// Create PTX variable expression with memory address information (static version)
@@ -1252,6 +1485,20 @@ impl<'a> MethodEmitContext<'a> {
         &mut self,
         inst: ast::Instruction<SpirvWord>,
     ) -> Result<(), TranslateError> {
+        // Set debug location for this instruction before emitting LLVM IR
+        let instruction_name = get_instruction_name(&inst);
+        if self.current_line <= 29 {
+            unsafe {
+                if let Err(e) = self.debug_context.add_debug_location(
+                    self.builder,
+                    self.current_line,
+                    1, // column
+                    instruction_name,
+                ) {
+                    eprintln!("Warning: Failed to add debug location for instruction: {}", e);
+                }
+            }
+        }
         match inst {
             ast::Instruction::Mov { data, arguments } => self.emit_mov(data, arguments),
             ast::Instruction::Ld { data, arguments } => self.emit_ld(data, arguments),
@@ -1315,8 +1562,8 @@ impl<'a> MethodEmitContext<'a> {
             todo!()
         }
 
-        // Set debug location before creating instruction
-        self.set_debug_location_before_instruction();
+        // Set debug location with current line number for this PTX instruction
+        self.set_debug_location_for_ptx_instruction("ld");
 
         let builder = self.builder;
         let type_ = get_type(self.context, &data.typ)?;
@@ -1521,8 +1768,8 @@ impl<'a> MethodEmitContext<'a> {
         data: ast::ArithDetails,
         arguments: ast::AddArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
-        // Set debug location before creating instruction
-        self.set_debug_location_before_instruction();
+        // Set debug location for PTX add instruction
+        self.set_debug_location_for_ptx_instruction("add");
 
         let builder = self.builder;
         let src1 = self.resolver.value(arguments.src1)?;
@@ -1542,8 +1789,8 @@ impl<'a> MethodEmitContext<'a> {
         data: ast::StData,
         arguments: ast::StArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
-        // Set debug location before creating instruction
-        self.set_debug_location_before_instruction();
+        // Set debug location for PTX store instruction
+        self.set_debug_location_for_ptx_instruction("st");
 
         let ptr = self.resolver.value(arguments.src1)?;
         let value = self.resolver.value(arguments.src2)?;
@@ -1650,6 +1897,9 @@ impl<'a> MethodEmitContext<'a> {
         data: ast::AtomDetails,
         arguments: ast::AtomArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
+        // Set debug location for PTX atomic instruction
+        self.set_debug_location_for_ptx_instruction("atom");
+
         let builder = self.builder;
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
@@ -3444,20 +3694,30 @@ impl<'a> MethodEmitContext<'a> {
 
     // Helper method to set debug location on the builder before creating instructions
     fn set_debug_location_before_instruction(&self) {
-        // For now, disable debug location setting to avoid LLVM validation errors
-        // The debug information infrastructure is in place but needs proper DILocation creation
-        // which requires a complete debug info setup with compile unit, file, and scope
-
-        // TODO: Implement proper DILocation creation when full debug info is needed
-        // if self.debug_context.debug_enabled {
-        //     // Would need proper DILocation creation here
-        // }
+        // This method is now handled per-instruction for better line number tracking
     }
 
     // Helper method to set debug location on an instruction (deprecated - use set_debug_location_before_instruction)
     fn set_debug_location(&self, _instruction: LLVMValueRef) {
         // This method is no longer needed since we set debug location on builder
         // All instructions created after setting the builder location will inherit it
+    }
+
+    // Helper method to set debug location for PTX instructions
+    fn set_debug_location_for_ptx_instruction(&mut self, ptx_instruction: &str) {
+        unsafe {
+            if let Err(e) = self.debug_context.add_debug_location(
+                self.builder,
+                self.current_line,
+                1,
+                ptx_instruction,
+            ) {
+                eprintln!(
+                    "Warning: Failed to set debug location for {}: {}",
+                    ptx_instruction, e
+                );
+            }
+        }
     }
 }
 

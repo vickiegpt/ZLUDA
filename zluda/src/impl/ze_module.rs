@@ -39,9 +39,9 @@ impl SpirvModule {
         let llvm_module = ptx::to_llvm_module(ast.clone())?;
 
         // Convert LLVM IR to SPIRV binary
-        let spirv_binary = ptx::llvm_to_spirv(unsafe {
-            std::str::from_raw_parts(llvm_module.llvm_ir.as_ptr(), llvm_module.llvm_ir.len())
-        })?;
+        let spirv_binary = ptx::llvm_to_spirv(
+            std::str::from_utf8(&llvm_module.llvm_ir).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
+        )?;
 
         // Create module build description
         let module_desc = ze_module_desc_t {
@@ -287,9 +287,9 @@ fn ptx_to_spirv(spirv_module: &SpirvModule) -> Result<Vec<u8>, CUerror> {
     let llvm_module = ptx::to_llvm_module(spirv_module.ast.clone()).unwrap();
 
     // Convert LLVM IR to SPIR-V using the robust implementation and the AsStr trait
-    let spirv_binary = ptx::llvm_to_spirv(unsafe {
-        std::str::from_raw_parts(llvm_module.llvm_ir.as_ptr(), llvm_module.llvm_ir.len())
-    })
+    let spirv_binary = ptx::llvm_to_spirv(
+        std::str::from_utf8(&llvm_module.llvm_ir).map_err(|_| CUerror::INVALID_VALUE)?
+    )
     .map_err(|_| CUerror::UNKNOWN)?;
 
     Ok(spirv_binary)

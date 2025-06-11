@@ -38,15 +38,15 @@ struct CompileArgs {
     /// Input PTX file
     #[arg(short, long)]
     input: PathBuf,
-    
+
     /// Output debug mapping file
     #[arg(short, long)]
     output: PathBuf,
-    
+
     /// Target architecture (amd_gcn, intel_spirv, sass)
     #[arg(short, long, default_value = "amd_gcn")]
     target: String,
-    
+
     /// Enable verbose debug output
     #[arg(short, long)]
     verbose: bool,
@@ -57,11 +57,11 @@ struct AnalyzeArgs {
     /// Debug mapping file to analyze
     #[arg(short, long)]
     mapping_file: PathBuf,
-    
+
     /// Show detailed instruction mappings
     #[arg(short, long)]
     detailed: bool,
-    
+
     /// Filter by PTX line number
     #[arg(short, long)]
     line: Option<u32>,
@@ -72,11 +72,11 @@ struct DebugArgs {
     /// Debug mapping file
     #[arg(short, long)]
     mapping_file: PathBuf,
-    
+
     /// Initial breakpoint location (file:line:column)
     #[arg(short, long)]
     breakpoint: Option<String>,
-    
+
     /// GDB-compatible mode
     #[arg(short, long)]
     gdb_mode: bool,
@@ -87,15 +87,15 @@ struct RecoverArgs {
     /// Debug mapping file
     #[arg(short, long)]
     mapping_file: PathBuf,
-    
+
     /// Target architecture crash address
     #[arg(short, long)]
     address: String,
-    
+
     /// Target architecture (amd_gcn, intel_spirv, sass)
     #[arg(short, long, default_value = "amd_gcn")]
     target: String,
-    
+
     /// Memory dump file
     #[arg(long)]
     memory_dump: Option<PathBuf>,
@@ -106,11 +106,11 @@ struct ExportArgs {
     /// Debug mapping file
     #[arg(short, long)]
     mapping_file: PathBuf,
-    
+
     /// Export format (json, gdb, vscode)
     #[arg(short, long, default_value = "json")]
     format: String,
-    
+
     /// Output file
     #[arg(short, long)]
     output: PathBuf,
@@ -137,45 +137,58 @@ async fn compile_command(args: CompileArgs) -> anyhow::Result<()> {
 
     // Read PTX source
     let ptx_content = fs::read_to_string(&args.input)?;
-    
-    // Parse PTX (using ptx_parser)
-    // For now, create mock debug mappings
-    let debug_mappings = vec![
-        DwarfMappingEntry {
-            ptx_location: PtxSourceLocation {
-                file: args.input.to_string_lossy().to_string(),
-                line: 1,
-                column: 1,
-                instruction_offset: 0,
-            },
-            target_instructions: vec![
-                TargetInstruction::AmdGcn {
-                    instruction: "v_add_f32 v0, v1, v2".to_string(),
-                    address: 0x1000,
-                    register_state: HashMap::new(),
+
+    // Compile PTX to LLVM IR with debug information
+    let result = ptx::ptx_to_llvm_with_debug(&ptx_content);
+
+    match result {
+        Ok((llvm_module, debug_mappings)) => {
+            // Convert LLVM module to string
+            let llvm_ir = llvm_module
+                .print_to_string()
+                .map_err(|e| anyhow::anyhow!("Failed to convert LLVM module to string: {}", e))?;
+
+            // Write LLVM IR to output file
+            fs::write(&args.output, llvm_ir)?;
+            println!(
+                "LLVM IR with debug info saved to: {}",
+                args.output.display()
+            );
+
+            if args.verbose {
+                println!("Debug mappings: {} entries", debug_mappings.len());
+                for (i, mapping) in debug_mappings.iter().enumerate().take(5) {
+                    println!(
+                        "  [{}] {}:{}:{} -> {} instructions",
+                        i,
+                        mapping.ptx_location.file,
+                        mapping.ptx_location.line,
+                        mapping.ptx_location.column,
+                        mapping.target_instructions.len()
+                    );
                 }
-            ],
-            variable_mappings: HashMap::new(),
-            scope_id: 1,
+                if debug_mappings.len() > 5 {
+                    println!("  ... and {} more entries", debug_mappings.len() - 5);
+                }
+            }
         }
-    ];
+        Err(e) => {
+            eprintln!("Compilation failed: {}", e);
+            return Err(anyhow::anyhow!("PTX compilation failed: {}", e));
+        }
+    }
 
-    // Save debug mappings
-    let json_output = serde_json::to_string_pretty(&debug_mappings)?;
-    fs::write(&args.output, json_output)?;
-
-    println!("Debug mappings saved to: {}", args.output.display());
     Ok(())
 }
 
 async fn analyze_command(args: AnalyzeArgs) -> anyhow::Result<()> {
     println!("Analyzing debug mappings...");
-    
+
     let content = fs::read_to_string(&args.mapping_file)?;
     let mappings: Vec<DwarfMappingEntry> = serde_json::from_str(&content)?;
 
     println!("Total mappings: {}", mappings.len());
-    
+
     for (i, mapping) in mappings.iter().enumerate() {
         if let Some(line_filter) = args.line {
             if mapping.ptx_location.line != line_filter {
@@ -184,30 +197,51 @@ async fn analyze_command(args: AnalyzeArgs) -> anyhow::Result<()> {
         }
 
         println!("\nMapping {}:", i + 1);
-        println!("  PTX Location: {}:{}:{}", 
-            mapping.ptx_location.file,
-            mapping.ptx_location.line,
-            mapping.ptx_location.column);
-        
-        println!("  Target Instructions: {}", mapping.target_instructions.len());
-        
+        println!(
+            "  PTX Location: {}:{}:{}",
+            mapping.ptx_location.file, mapping.ptx_location.line, mapping.ptx_location.column
+        );
+
+        println!(
+            "  Target Instructions: {}",
+            mapping.target_instructions.len()
+        );
+
         if args.detailed {
             for (j, inst) in mapping.target_instructions.iter().enumerate() {
                 match inst {
-                    TargetInstruction::AmdGcn { instruction, address, .. } => {
+                    TargetInstruction::AmdGcn {
+                        instruction,
+                        address,
+                        ..
+                    } => {
                         println!("    [{}] AMD GCN: {} @ 0x{:x}", j, instruction, address);
                     }
-                    TargetInstruction::IntelSpirv { instruction, opcode, .. } => {
+                    TargetInstruction::IntelSpirv {
+                        instruction,
+                        opcode,
+                        ..
+                    } => {
                         println!("    [{}] SPIRV: {} (opcode: {})", j, instruction, opcode);
                     }
-                    TargetInstruction::Sass { instruction, address, predicate } => {
-                        let pred_str = predicate.as_ref().map(|p| format!(" [{}]", p)).unwrap_or_default();
-                        println!("    [{}] SASS: {} @ 0x{:x}{}", j, instruction, address, pred_str);
+                    TargetInstruction::Sass {
+                        instruction,
+                        address,
+                        predicate,
+                    } => {
+                        let pred_str = predicate
+                            .as_ref()
+                            .map(|p| format!(" [{}]", p))
+                            .unwrap_or_default();
+                        println!(
+                            "    [{}] SASS: {} @ 0x{:x}{}",
+                            j, instruction, address, pred_str
+                        );
                     }
                 }
             }
         }
-        
+
         if !mapping.variable_mappings.is_empty() {
             println!("  Variables: {}", mapping.variable_mappings.len());
             if args.detailed {
@@ -223,7 +257,7 @@ async fn analyze_command(args: AnalyzeArgs) -> anyhow::Result<()> {
 
 async fn debug_command(args: DebugArgs) -> anyhow::Result<()> {
     println!("Starting interactive debugging session...");
-    
+
     let mut manager = PtxStateRecoveryManager::new();
     manager.load_debug_mappings(&args.mapping_file).unwrap();
 
@@ -234,16 +268,19 @@ async fn debug_command(args: DebugArgs) -> anyhow::Result<()> {
             let file = parts[0].to_string();
             let line = parts[1].parse::<u32>().unwrap_or(1);
             let column = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
-            
+
             let location = PtxSourceLocation {
                 file,
                 line,
                 column,
                 instruction_offset: 0,
             };
-            
+
             let bp_id = manager.add_breakpoint(location, None);
-            println!("Breakpoint {} set at {}:{}:{}", bp_id, parts[0], line, column);
+            println!(
+                "Breakpoint {} set at {}:{}:{}",
+                bp_id, parts[0], line, column
+            );
         }
     }
 
@@ -270,9 +307,14 @@ async fn debug_command(args: DebugArgs) -> anyhow::Result<()> {
             "backtrace" | "bt" => {
                 println!("Call stack:");
                 for (i, frame) in manager.get_call_stack().iter().enumerate() {
-                    println!("  #{}: {} at {}:{}:{}", 
-                        i, frame.function_name,
-                        frame.location.file, frame.location.line, frame.location.column);
+                    println!(
+                        "  #{}: {} at {}:{}:{}",
+                        i,
+                        frame.function_name,
+                        frame.location.file,
+                        frame.location.line,
+                        frame.location.column
+                    );
                 }
             }
             cmd if cmd.starts_with("break ") || cmd.starts_with("b ") => {
@@ -282,14 +324,14 @@ async fn debug_command(args: DebugArgs) -> anyhow::Result<()> {
                     let file = parts[0].to_string();
                     let line = parts[1].parse::<u32>().unwrap_or(1);
                     let column = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
-                    
+
                     let location = PtxSourceLocation {
                         file: file.clone(),
                         line,
                         column,
                         instruction_offset: 0,
                     };
-                    
+
                     let bp_id = manager.add_breakpoint(location, None);
                     println!("Breakpoint {} set at {}:{}:{}", bp_id, file, line, column);
                 } else {
@@ -324,10 +366,15 @@ async fn debug_command(args: DebugArgs) -> anyhow::Result<()> {
             }
             cmd if cmd.starts_with("recover ") => {
                 if let Some(addr_str) = cmd.split_whitespace().nth(1) {
-                    if let Ok(address) = u64::from_str_radix(addr_str.trim_start_matches("0x"), 16) {
-                        if let Some(location) = manager.find_ptx_location_from_target("amd_gcn", address) {
-                            println!("Address 0x{:x} maps to PTX location: {}:{}:{}", 
-                                address, location.file, location.line, location.column);
+                    if let Ok(address) = u64::from_str_radix(addr_str.trim_start_matches("0x"), 16)
+                    {
+                        if let Some(location) =
+                            manager.find_ptx_location_from_target("amd_gcn", address)
+                        {
+                            println!(
+                                "Address 0x{:x} maps to PTX location: {}:{}:{}",
+                                address, location.file, location.line, location.column
+                            );
                         } else {
                             println!("No PTX location found for address 0x{:x}", address);
                         }
@@ -342,7 +389,10 @@ async fn debug_command(args: DebugArgs) -> anyhow::Result<()> {
                 // Empty line, continue
             }
             _ => {
-                println!("Unknown command: {}. Type 'help' for available commands.", input);
+                println!(
+                    "Unknown command: {}. Type 'help' for available commands.",
+                    input
+                );
             }
         }
     }
@@ -352,7 +402,7 @@ async fn debug_command(args: DebugArgs) -> anyhow::Result<()> {
 
 async fn recover_command(args: RecoverArgs) -> anyhow::Result<()> {
     println!("Recovering PTX state from crash...");
-    
+
     let mut manager = PtxStateRecoveryManager::new();
     manager.load_debug_mappings(&args.mapping_file).unwrap();
 
@@ -380,7 +430,10 @@ async fn recover_command(args: RecoverArgs) -> anyhow::Result<()> {
         // Generate recovery report
         println!("\n{}", manager.generate_state_dump());
     } else {
-        println!("No PTX location found for address 0x{:x} in {} architecture", address, args.target);
+        println!(
+            "No PTX location found for address 0x{:x} in {} architecture",
+            address, args.target
+        );
     }
 
     Ok(())
@@ -388,9 +441,9 @@ async fn recover_command(args: RecoverArgs) -> anyhow::Result<()> {
 
 async fn export_command(args: ExportArgs) -> anyhow::Result<()> {
     println!("Exporting debug information...");
-    
+
     let manager = PtxStateRecoveryManager::new();
-    
+
     match args.format.as_str() {
         "json" => {
             let content = fs::read_to_string(&args.mapping_file)?;
@@ -424,7 +477,10 @@ async fn export_command(args: ExportArgs) -> anyhow::Result<()> {
                 ]
             });
             fs::write(&args.output, serde_json::to_string_pretty(&vscode_config)?)?;
-            println!("VS Code debug configuration saved to: {}", args.output.display());
+            println!(
+                "VS Code debug configuration saved to: {}",
+                args.output.display()
+            );
         }
         _ => {
             println!("Unknown export format: {}", args.format);

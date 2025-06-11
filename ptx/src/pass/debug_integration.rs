@@ -11,6 +11,7 @@ use llvm_zluda::core::*;
 use llvm_zluda::debuginfo::*;
 use llvm_zluda::prelude::*;
 use llvm_zluda::*;
+use ptx_parser as ast;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::ptr;
@@ -21,6 +22,8 @@ pub struct DebugAwarePtxContext {
     pub source_mappings: Vec<DwarfMappingEntry>,
     pub current_function_debug_info: Option<LLVMMetadataRef>,
     pub debug_enabled: bool,
+    pub ptx_line_mapping: HashMap<u32, PtxSourceLocation>,
+    pub instruction_counter: u32,
 }
 
 impl DebugAwarePtxContext {
@@ -30,6 +33,8 @@ impl DebugAwarePtxContext {
             source_mappings: Vec::new(),
             current_function_debug_info: None,
             debug_enabled,
+            ptx_line_mapping: HashMap::new(),
+            instruction_counter: 0,
         }
     }
 
@@ -100,8 +105,7 @@ impl DebugAwarePtxContext {
                     dwarf_builder.create_debug_location(line, column, Some(function_scope))?;
 
                 // Set the debug location on the builder
-                let debug_value = LLVMMetadataAsValue(dwarf_builder.context, debug_loc);
-                LLVMSetCurrentDebugLocation(builder, debug_value);
+                LLVMZludaSetCurrentDebugLocation(builder, debug_loc);
             }
 
             // Store mapping for later use (regardless of whether we set debug location)
@@ -135,12 +139,91 @@ impl DebugAwarePtxContext {
                 function_name,
                 function_name, // linkage name same as function name
                 line,
-                function_type, // proper function type
-                false,         // not local to unit
-                true,          // is definition
-            )?;
+                true, // is definition
+                &[],  // parameter types (empty for now)
+            );
 
             self.current_function_debug_info = Some(function_debug_info);
+        }
+        Ok(())
+    }
+
+    /// Create enhanced debug info for function parameters
+    pub unsafe fn create_enhanced_parameter_debug_info(
+        &mut self,
+        param_name: &str,
+        param_type: &ptx_parser::ScalarType,
+        arg_num: u32,
+        line: u32,
+        alloca_inst: LLVMValueRef,
+        builder: LLVMBuilderRef,
+    ) -> Result<(), String> {
+        if !self.debug_enabled || self.dwarf_builder.is_none() {
+            return Ok(());
+        }
+
+        if let (Some(ref dwarf_builder), Some(function_scope)) =
+            (&self.dwarf_builder, self.current_function_debug_info)
+        {
+            // Create parameter variable debug info
+            let param_debug_info = dwarf_builder.create_parameter_debug_info(
+                function_scope,
+                param_name,
+                param_type,
+                arg_num,
+                line,
+            );
+
+            // Create debug declare for the parameter
+            let debug_loc = dwarf_builder.create_debug_location(line, 0, Some(function_scope))?;
+            let expr =
+                LLVMDIBuilderCreateExpression(dwarf_builder.get_builder(), ptr::null_mut(), 0);
+
+            LLVMDIBuilderInsertDeclareRecordAtEnd(
+                dwarf_builder.get_builder(),
+                alloca_inst,
+                param_debug_info,
+                expr,
+                debug_loc,
+                LLVMGetInsertBlock(builder),
+            );
+        }
+        Ok(())
+    }
+
+    /// Create enhanced debug info for local variables
+    pub unsafe fn create_enhanced_local_variable_debug_info(
+        &mut self,
+        var_name: &str,
+        var_type: &ptx_parser::ScalarType,
+        line: u32,
+        alloca_inst: LLVMValueRef,
+        builder: LLVMBuilderRef,
+    ) -> Result<(), String> {
+        if !self.debug_enabled || self.dwarf_builder.is_none() {
+            return Ok(());
+        }
+
+        if let (Some(ref dwarf_builder), Some(scope)) =
+            (&self.dwarf_builder, self.current_function_debug_info)
+        {
+            // Create local variable debug info
+            let var_debug_info =
+                dwarf_builder.create_local_variable_debug_info(scope, var_name, var_type, line);
+
+            // Create debug declare for the variable
+            let debug_loc = dwarf_builder.create_debug_location(line, 0, Some(scope))?;
+            let expr =
+                LLVMDIBuilderCreateExpression(dwarf_builder.get_builder(), ptr::null_mut(), 0);
+
+            LLVMDIBuilderInsertDeclareRecordAtEnd(
+                dwarf_builder.get_builder(),
+                alloca_inst,
+                var_debug_info,
+                expr,
+                debug_loc,
+                LLVMGetInsertBlock(builder),
+            );
         }
         Ok(())
     }
@@ -164,8 +247,13 @@ impl DebugAwarePtxContext {
             let var_type =
                 dwarf_builder.create_basic_type(var_type_name, var_size_bits, encoding)?;
 
-            let var_debug_info =
-                dwarf_builder.create_variable_debug_info(var_name, var_line, var_type, location)?;
+            let var_debug_info = dwarf_builder.create_variable_debug_info(
+                var_name,
+                var_line,
+                var_type,
+                location,
+                self.current_function_debug_info,
+            )?;
 
             // Create debug location for variable declaration
             let debug_loc = dwarf_builder.create_debug_location(
@@ -562,10 +650,6 @@ fn ptx_type_to_dwarf_type(
     }
 }
 
-// Remove duplicate definition - use the one from debug.rs module
-
-// Remove duplicate PtxDwarfBuilder definition since it's already in debug.rs
-
 /// Debug context for managing debug information
 pub struct DebugContext {
     /// Whether debug information is enabled
@@ -576,6 +660,10 @@ pub struct DebugContext {
     pub current_function_debug_info: Option<LLVMMetadataRef>,
     /// Source mappings for debug information
     pub source_mappings: Vec<DwarfMappingEntry>,
+    /// PTX instruction tracking
+    pub instruction_counter: u32,
+    /// PTX line to instruction mapping
+    pub ptx_line_mapping: HashMap<u32, PtxSourceLocation>,
 }
 
 impl DebugContext {
@@ -587,6 +675,8 @@ impl DebugContext {
             dwarf_builder: None, // No DWARF builder for now
             current_function_debug_info: None,
             source_mappings: Vec::new(),
+            instruction_counter: 0,
+            ptx_line_mapping: HashMap::new(),
         }
     }
 
@@ -654,30 +744,44 @@ impl DebugContext {
         }
 
         if let Some(ref mut dwarf_builder) = self.dwarf_builder {
-            // Only create debug locations if we have a valid function scope
-            // Using compile unit as scope is not valid according to LLVM verification
+            // Always create debug locations with proper scope for .debug_loc section generation
             if let Some(function_scope) = self.current_function_debug_info {
                 // Create debug location with valid function scope
                 let debug_loc =
                     dwarf_builder.create_debug_location(line, column, Some(function_scope))?;
 
-                // Set the debug location on the builder
-                let debug_value = LLVMMetadataAsValue(dwarf_builder.context, debug_loc);
-                LLVMSetCurrentDebugLocation(builder, debug_value);
+                // Set the debug location on the builder - this is crucial for .debug_loc generation
+                LLVMZludaSetCurrentDebugLocation(builder, debug_loc);
+            } else {
+                // If no function scope, try to use compile unit scope
+                let debug_loc = dwarf_builder.create_debug_location(line, column, None)?;
+                LLVMZludaSetCurrentDebugLocation(builder, debug_loc);
             }
 
-            // Store mapping for later use (regardless of whether we set debug location)
+            // Store mapping for later use and increment instruction counter
+            self.instruction_counter += 1;
             self.source_mappings.push(debug::DwarfMappingEntry {
                 ptx_location: debug::PtxSourceLocation {
                     file: "kernel.ptx".to_string(),
                     line,
                     column,
-                    instruction_offset: 0,
+                    instruction_offset: self.instruction_counter as usize,
                 },
                 target_instructions: Vec::new(),
                 variable_mappings: std::collections::HashMap::new(),
                 scope_id: 0,
             });
+
+            // Add to PTX line mapping for source correlation
+            self.ptx_line_mapping.insert(
+                line,
+                debug::PtxSourceLocation {
+                    file: "kernel.ptx".to_string(),
+                    line,
+                    column,
+                    instruction_offset: self.instruction_counter as usize,
+                },
+            );
         }
 
         Ok(())

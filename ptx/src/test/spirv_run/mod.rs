@@ -1,5 +1,8 @@
 // Fixed ZLUDA SPIR-V runner for Intel GPUs
 use crate::pass;
+use crate::pass::debug_integration::{
+    ptx_type_size_bits, ptx_type_to_dwarf_encoding, DebugContext,
+};
 #[cfg(feature = "amd")]
 use hip_runtime_sys::hipError_t;
 use std::error;
@@ -304,6 +307,25 @@ fn test_cuda_assert<
     input: &[Input],
     output: &mut [Output],
 ) -> Result<(), Box<dyn error::Error + 'a>> {
+    // Run the PTX through the debug pipeline to generate intermediate files
+    eprintln!(
+        "ZLUDA TEST: Running PTX through debug pipeline for test: {}",
+        name
+    );
+    match crate::ptx_to_llvm_to_ptx_with_sass_mapping(ptx_text) {
+        Ok((llvm_module, reconstructed_ptx, sass_mapping)) => {
+            eprintln!("ZLUDA TEST: Debug pipeline completed successfully");
+            eprintln!("ZLUDA TEST: Generated {} SASS mappings", sass_mapping.len());
+            eprintln!(
+                "ZLUDA TEST: Reconstructed PTX length: {} bytes",
+                reconstructed_ptx.len()
+            );
+        }
+        Err(e) => {
+            eprintln!("ZLUDA TEST: Debug pipeline failed: {:?}", e);
+        }
+    }
+
     let name = CString::new(name)?;
     let result =
         run_cuda(name.as_c_str(), ptx_text, input, output).map_err(|err| DisplayError { err })?;
@@ -543,7 +565,7 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
             &spirv_file,
             "--spirv-ext=+all",
             "--spirv-debug",
-            "--spirv-text"
+            "--spirv-text",
         ],
         // Method 2: Improved version with address space fix for globals
         vec!["bash", "-c", &fixed_globals_cmd],
@@ -758,19 +780,19 @@ fn run_ze<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
 
 #[cfg(feature = "tenstorrent")]
 fn generate_tosa_mlir_from_ptx(
-    kernel_name: &str, 
+    kernel_name: &str,
     ptx_text: &str,
-    input_len: usize, 
-    output_len: usize
+    input_len: usize,
+    output_len: usize,
 ) -> Result<String, String> {
     // Parse the PTX text and convert to TOSA MLIR using the real pipeline
     use crate::pass::emit_tosa_mlir;
     use ptx_parser;
-    
+
     // Parse the PTX module
     let ast = ptx_parser::parse_module_checked(ptx_text)
         .map_err(|e| format!("Failed to parse PTX: {:?}", e))?;
-    
+
     // Convert using the real emit_tosa_mlir pipeline
     match pass::to_mlir_module(ast) {
         Ok(mlir_result) => {
@@ -789,24 +811,28 @@ fn generate_tosa_mlir_from_ptx(
 
 #[cfg(feature = "tenstorrent")]
 fn generate_tosa_mlir_from_module(
-    kernel_name: &str, 
-    module: &pass::Module, 
-    input_len: usize, 
-    output_len: usize
+    kernel_name: &str,
+    module: &pass::Module,
+    input_len: usize,
+    output_len: usize,
 ) -> Result<String, String> {
     // Since Module doesn't contain PTX AST, we'll use the simple kernel generator
     // which creates appropriate PTX AST structures for a basic load-store operation
     use crate::pass::emit_tosa_mlir;
-    
+
     // Use the simple kernel generator which creates proper PTX AST
     emit_tosa_mlir::generate_simple_kernel(kernel_name, input_len, output_len)
 }
 
 #[cfg(feature = "tenstorrent")]
-fn generate_tosa_mlir(kernel_name: &str, input_len: usize, output_len: usize) -> Result<String, String> {
+fn generate_tosa_mlir(
+    kernel_name: &str,
+    input_len: usize,
+    output_len: usize,
+) -> Result<String, String> {
     // Use the wrapper function from emit_tosa_mlir module as fallback
     use crate::pass::emit_tosa_mlir;
-    
+
     emit_tosa_mlir::generate_simple_kernel(kernel_name, input_len, output_len)
 }
 
@@ -844,14 +870,17 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
 
     // 4. 生成TOSA MLIR代码，使用真实的PTX源代码
     let tosa_mlir = generate_tosa_mlir_from_ptx(kernel_name, ptx_text, input.len(), output.len())?;
-    
+
     fs::write(&mlir_file, &tosa_mlir)
         .map_err(|e| format!("Failed to write tosa MLIR to file: {}", e))?;
-        
-    eprintln!("ZLUDA DEBUG: Generated tosa MLIR file at {}", mlir_file.display());
+
+    eprintln!(
+        "ZLUDA DEBUG: Generated tosa MLIR file at {}",
+        mlir_file.display()
+    );
 
     // 5. 分步执行TOSA到TTIR的完整管道，将MLIR转换为C++
-    
+
     // Step 1: TOSA to TTIR conversion
     let ttir_file = temp_dir.join(format!("{}_ttir.mlir", kernel_name));
     eprintln!("ZLUDA DEBUG: Step 1 - Converting TOSA to TTIR");
@@ -871,8 +900,11 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
 
     fs::write(&ttir_file, &tosa_to_ttir_output.stdout)
         .map_err(|e| format!("Failed to write TTIR file: {}", e))?;
-    
-    eprintln!("ZLUDA DEBUG: Generated TTIR file at {}", ttir_file.display());
+
+    eprintln!(
+        "ZLUDA DEBUG: Generated TTIR file at {}",
+        ttir_file.display()
+    );
 
     // Step 2: TTIR to EmitC conversion
     let emitc_file = temp_dir.join(format!("{}_emitc.mlir", kernel_name));
@@ -892,8 +924,11 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
 
     fs::write(&emitc_file, &ttir_to_emitc_output.stdout)
         .map_err(|e| format!("Failed to write EmitC file: {}", e))?;
-    
-    eprintln!("ZLUDA DEBUG: Generated EmitC file at {}", emitc_file.display());
+
+    eprintln!(
+        "ZLUDA DEBUG: Generated EmitC file at {}",
+        emitc_file.display()
+    );
 
     // Step 3: EmitC to C++ conversion
     eprintln!("ZLUDA DEBUG: Step 3 - Converting EmitC to C++");
@@ -915,8 +950,10 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
         .map_err(|e| format!("Failed to write generated C++ to file: {}", e))?;
 
     eprintln!("ZLUDA DEBUG: Generated C++ file at {}", cpp_file.display());
-    eprintln!("ZLUDA DEBUG: C++ content preview: {}", 
-        std::str::from_utf8(&emitc_to_cpp_output.stdout).unwrap_or("Invalid UTF-8"));
+    eprintln!(
+        "ZLUDA DEBUG: C++ content preview: {}",
+        std::str::from_utf8(&emitc_to_cpp_output.stdout).unwrap_or("Invalid UTF-8")
+    );
 
     // 6. 创建tt_metal程序
     let program = device.create_program()?;

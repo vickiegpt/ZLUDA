@@ -318,9 +318,22 @@ impl<'a, 'input> InsertMemSSAVisitor<'a, 'input> {
         };
         let old_name = var.name;
         let new_space = ast::StateSpace::Local;
-        let new_name = self
-            .resolver
-            .register_unnamed(Some((var.v_type.clone(), new_space)));
+
+        // Preserve the original PTX variable name when converting from reg to local
+        let new_name = if let Some(old_entry) = self.resolver.ident_map.get(&old_name) {
+            if let Some(ref original_name) = old_entry.name {
+                // Register the new variable with the same name as the original PTX variable
+                self.resolver
+                    .register_named(original_name.clone(), Some((var.v_type.clone(), new_space)))
+            } else {
+                self.resolver
+                    .register_unnamed(Some((var.v_type.clone(), new_space)))
+            }
+        } else {
+            self.resolver
+                .register_unnamed(Some((var.v_type.clone(), new_space)))
+        };
+
         self.variable(&var.v_type, old_name, new_name, old_space)?;
         var.name = new_name;
         var.state_space = new_space;

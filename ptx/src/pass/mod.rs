@@ -14,7 +14,7 @@ use std::{
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
-mod debug_integration;
+pub(crate) mod debug_integration;
 mod deparamize_functions;
 pub(crate) mod emit_llvm;
 pub(crate) mod emit_tosa_mlir;
@@ -192,6 +192,103 @@ impl Module {
         let _ = fs::remove_file(temp_ll_path);
 
         Ok(ir_text)
+    }
+}
+
+/// PTX to LLVM to PTX compilation with debug info for SASS mapping
+pub fn to_llvm_module_with_debug_round_trip<'input>(ast: ast::Module<'input>) -> Result<(Module, String, HashMap<u64, crate::debug::PtxSourceLocation>), TranslateError> {
+    // First compile PTX to LLVM with debug info preserved
+    let llvm_module = to_llvm_module(ast)?;
+    
+    // Get the LLVM IR as text for debugging
+    let llvm_ir_text = llvm_module.print_to_string()
+        .map_err(|e| TranslateError::UnexpectedError(format!("Failed to convert LLVM to string: {}", e)))?;
+    
+    // Save LLVM IR with debug info to /tmp
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let llvm_ir_path = format!("/tmp/ptx_debug_{}_llvm.ll", timestamp);
+    std::fs::write(&llvm_ir_path, &llvm_ir_text)
+        .map_err(|e| TranslateError::UnexpectedError(format!("Failed to write LLVM IR to {}: {}", llvm_ir_path, e)))?;
+    eprintln!("ZLUDA DEBUG: Saved LLVM IR with debug info to: {}", llvm_ir_path);
+    
+    // Save bitcode to /tmp
+    let bitcode_path = format!("/tmp/ptx_debug_{}_llvm.bc", timestamp);
+    std::fs::write(&bitcode_path, &*llvm_module.llvm_ir)
+        .map_err(|e| TranslateError::UnexpectedError(format!("Failed to write bitcode to {}: {}", bitcode_path, e)))?;
+    eprintln!("ZLUDA DEBUG: Saved LLVM bitcode to: {}", bitcode_path);
+    
+    // For now, we'll need to parse the bitcode back to get an LLVMModuleRef
+    // This is not ideal but necessary given the current Module structure
+    unsafe {
+        use llvm_zluda::core::*;
+        use llvm_zluda::bit_reader::*;
+        use std::ffi::CString;
+        
+        // Create a new LLVM context for conversion
+        let context = LLVMContextCreate();
+        
+        // Create memory buffer from the module's bitcode
+        let bitcode_data = &llvm_module.llvm_ir;
+        let mem_buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(
+            bitcode_data.as_ptr() as *const i8,
+            bitcode_data.len(),
+            CString::new("module").unwrap().as_ptr(),
+        );
+        
+        // Parse bitcode into module
+        let mut module_ref = std::ptr::null_mut();
+        let mut err_msg = std::ptr::null_mut();
+        let result = LLVMParseBitcodeInContext(context, mem_buf, &mut module_ref, &mut err_msg);
+        
+        if result != 0 {
+            let error = if !err_msg.is_null() {
+                let err_str = std::ffi::CStr::from_ptr(err_msg).to_str().unwrap_or("Unknown error");
+                LLVMDisposeMessage(err_msg);
+                err_str.to_string()
+            } else {
+                "Failed to parse bitcode".to_string()
+            };
+            LLVMContextDispose(context);
+            return Err(TranslateError::UnexpectedError(format!("Failed to parse LLVM bitcode: {}", error)));
+        }
+        
+        // Use LLVM's NVPTX backend to convert to PTX
+        eprintln!("ZLUDA DEBUG: Using LLVM NVPTX backend for PTX generation...");
+        
+        // Write LLVM IR to a temporary file
+        let llvm_temp_path = format!("/tmp/zluda_llvm_{}.ll", timestamp);
+        std::fs::write(&llvm_temp_path, &llvm_ir_text)
+            .map_err(|e| TranslateError::UnexpectedError(format!("Failed to write temp LLVM: {}", e)))?;
+        
+        // Use llc to convert LLVM IR to PTX with full DWARF debug info
+        let ptx_temp_path = format!("/tmp/zluda_ptx_{}.ptx", timestamp);
+        let llc_output = std::process::Command::new("llc-20")
+            .args(&[
+                "-march=nvptx64",
+                "-mcpu=sm_70",  // Use newer compute capability for better debug support
+                "-dwarf-version=4", // Use DWARF version 4
+                "-emit-call-site-info", // Emit call site debug information
+                "-debug-entry-values", // Enable debug info for debug entry values
+                &llvm_temp_path,
+                "-o",
+                &ptx_temp_path,
+            ])
+            .output()
+            .map_err(|e| TranslateError::UnexpectedError(format!("Failed to execute llc: {}", e)))?;
+        
+        if !llc_output.status.success() {
+            let stderr = String::from_utf8_lossy(&llc_output.stderr);
+            return Err(TranslateError::UnexpectedError(format!("llc failed: {}", stderr)));
+        }
+        
+        // Read the generated PTX
+        let ptx_text = std::fs::read_to_string(ptx_temp_path)
+            .map_err(|e| TranslateError::UnexpectedError(format!("Failed to read generated PTX: {}", e)))?;
+        
+        Ok((llvm_module, ptx_text, HashMap::new()))
     }
 }
 
