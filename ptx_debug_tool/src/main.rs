@@ -138,8 +138,14 @@ async fn compile_command(args: CompileArgs) -> anyhow::Result<()> {
     // Read PTX source
     let ptx_content = fs::read_to_string(&args.input)?;
 
-    // Compile PTX to LLVM IR with debug information
-    let result = ptx::ptx_to_llvm_with_debug(&ptx_content);
+    // Get the absolute path of the input file for debug info
+    let source_filename = args.input.canonicalize()
+        .unwrap_or_else(|_| args.input.clone())
+        .to_string_lossy()
+        .to_string();
+
+    // Compile PTX to LLVM IR with debug information and custom filename
+    let result = ptx::ptx_to_llvm_with_debug_and_filename(&ptx_content, &source_filename);
 
     match result {
         Ok((llvm_module, debug_mappings)) => {

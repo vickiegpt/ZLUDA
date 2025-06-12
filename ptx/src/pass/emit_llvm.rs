@@ -151,6 +151,68 @@ impl Module {
             Ok(())
         }
     }
+
+    /// 直接生成LLVM IR文本，不依赖外部工具
+    pub fn write_ir_to_string(&self) -> Result<String, String> {
+        use llvm_zluda::core::*;
+        use std::ffi::CStr;
+
+        unsafe {
+            // 直接从当前模块生成IR字符串
+            let ir_cstr = LLVMPrintModuleToString(self.0);
+            let ir_string = CStr::from_ptr(ir_cstr).to_string_lossy().to_string();
+
+            // 清理资源
+            LLVMDisposeMessage(ir_cstr);
+
+            Ok(ir_string)
+        }
+    }
+
+    pub fn print_to_string(&self) -> Result<String, String> {
+        // 首先尝试直接生成LLVM IR
+        if let Ok(ir) = self.write_ir_to_string() {
+            return Ok(ir);
+        }
+
+        // 如果失败，则使用原有的llvm-dis方法作为后备
+        use std::fs;
+        use std::io::Write;
+        use std::process::Command;
+
+        // Create a temporary file to store the bitcode
+        let temp_bc_path = "/tmp/zluda_temp.bc";
+        let temp_ll_path = "/tmp/zluda_temp.ll";
+
+        // Write the LLVM IR to a temp file
+        fs::write(temp_bc_path, &*self.write_bitcode_to_memory())
+            .map_err(|e| format!("Failed to write temporary bitcode file: {}", e))?;
+
+        // Use llvm-dis to convert the bitcode to text
+        let llvm_dis_output = Command::new("llvm-dis-20")
+            .arg(temp_bc_path)
+            .arg("-o")
+            .arg(temp_ll_path)
+            .output()
+            .map_err(|e| format!("Failed to execute llvm-dis: {}", e))?;
+
+        if !llvm_dis_output.status.success() {
+            return Err(format!(
+                "llvm-dis failed: {}",
+                String::from_utf8_lossy(&llvm_dis_output.stderr)
+            ));
+        }
+
+        // Read the resulting text file
+        let ir_text = fs::read_to_string(temp_ll_path)
+            .map_err(|e| format!("Failed to read disassembled LLVM IR: {}", e))?;
+
+        // Clean up temp files
+        // let _ = fs::remove_file(temp_bc_path);
+        // let _ = fs::remove_file(temp_ll_path);
+
+        Ok(ir_text)
+    }
 }
 
 impl Drop for Module {
@@ -246,103 +308,85 @@ pub(super) fn run<'input>(
     id_defs: GlobalStringIdentResolver2<'input>,
     directives: Vec<Directive2<'input, ast::Instruction<SpirvWord>, SpirvWord>>,
 ) -> Result<MemoryBuffer, TranslateError> {
+    run_with_filename(id_defs, directives, "kernel.ptx")
+}
+
+pub(super) fn run_with_filename<'input>(
+    id_defs: GlobalStringIdentResolver2<'input>,
+    directives: Vec<Directive2<'input, ast::Instruction<SpirvWord>, SpirvWord>>,
+    source_filename: &str,
+) -> Result<MemoryBuffer, TranslateError> {
     let context = Context::new();
     let module = Module::new(&context, LLVM_UNNAMED);
+
+    // Set the module to use the old debug intrinsics format (llvm.dbg.value)
+    unsafe { LLVMSetIsNewDbgInfoFormat(module.get(), 0) };
+
     let target_triple = CString::new("nvptx64-nvidia-cuda").map_err(|_| error_unreachable())?;
     unsafe { LLVMSetTarget(module.get(), target_triple.as_ptr()) };
 
     // Set proper data layout for NVPTX
     let data_layout = CString::new("e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v16:16:16-v32:32:32-v64:64:64-v128:128:128-n16:32:64").map_err(|_| error_unreachable())?;
     unsafe { LLVMSetDataLayout(module.get(), data_layout.as_ptr()) };
-    let mut emit_ctx = ModuleEmitContext::new(&context, &module, &id_defs);
+
     let mut kernel_entries = Vec::new();
 
-    // Temporarily disable debug intrinsics declaration
+    // Declare debug intrinsics
     declare_debug_intrinsics(&context, &module)?;
 
-    // Create the main debug context properly
     let mut emit_ctx = ModuleEmitContext::new(&context, &module, &id_defs);
 
-    // Initialize debug info first before any other operations
+    // Initialize debug info with custom source filename
     unsafe {
-        if let Err(e) = emit_ctx.debug_context.initialize_debug_info(
+        eprintln!(
+            "ZLUDA DEBUG TRACE: Initializing debug info with filename: {}",
+            source_filename
+        );
+        if let Err(e) = emit_ctx.debug_context.initialize_debug_info_with_details(
             context.get(),
             module.get(),
-            "compiled_kernel.ptx",
+            source_filename, // Use custom source filename
+            "ZLUDA PTX Compiler with Enhanced Debug Support",
+            0, // optimization level
         ) {
             eprintln!("Warning: Failed to initialize debug info: {}", e);
+        } else {
+            eprintln!(
+                "ZLUDA DEBUG TRACE: Debug info initialized successfully with {}",
+                source_filename
+            );
         }
     }
 
     for directive in directives {
         match directive {
-            Directive2::Variable(linking, variable) => emit_ctx.emit_global(linking, variable)?,
+            Directive2::Variable(linking, var) => {
+                emit_ctx.emit_global(linking, var)?;
+            }
             Directive2::Method(method) => {
-                // Check if this is a kernel function
-                if let ast::MethodName::Kernel(name) = &method.func_decl.name {
-                    kernel_entries.push(name.to_string());
+                let name = match method.func_decl.name {
+                    ast::MethodName::Kernel(name) => name,
+                    ast::MethodName::Func(id) => {
+                        id_defs.ident_map[&id].name.as_deref().unwrap_or("unknown")
+                    }
+                };
+                let is_kernel = method.func_decl.name.is_kernel();
+                emit_ctx.emit_method(method)?;
+                if is_kernel {
+                    kernel_entries.push((name.to_string(), std::ptr::null_mut::<()>()));
                 }
-                emit_ctx.emit_method(method)?
             }
         }
     }
 
-    // Add EntryPoint metadata for each kernel
-    if !kernel_entries.is_empty() {
-        let spirv_entry_md = unsafe {
-            LLVMGetOrInsertNamedMetadata(
-                module.get(),
-                "spirv.EntryPoint\0".as_ptr().cast(),
-                "spirv.EntryPoint".len(),
-            )
-        };
-
-        for kernel_name in kernel_entries {
-            let fn_name = CString::new(kernel_name.clone()).map_err(|_| error_unreachable())?;
-            let fn_value = unsafe { LLVMGetNamedFunction(module.get(), fn_name.as_ptr()) };
-            if fn_value.is_null() {
-                continue;
-            }
-
-            // Create the metadata entry for this kernel
-            let fn_md = unsafe { LLVMValueAsMetadata(fn_value) };
-            let name_string =
-                unsafe { CString::new(kernel_name.clone()).map_err(|_| error_unreachable())? };
-            let name_value = unsafe {
-                LLVMMDStringInContext2(
-                    context.get(),
-                    name_string.as_ptr(),
-                    name_string.as_bytes().len(),
-                )
-            };
-
-            // Create an array of metadata values for the node
-            let mut md_values = [fn_md, name_value];
-
-            // Create the metadata node from the array
-            let entry_md = unsafe {
-                LLVMMDNodeInContext2(context.get(), md_values.as_mut_ptr(), md_values.len())
-            };
-
-            // Convert the metadata to a value for adding to the named metadata
-            let entry_value = unsafe { LLVMMetadataAsValue(context.get(), entry_md) };
-
-            // Add to the named metadata
-            unsafe {
-                LLVMAddNamedMetadataOperand(
-                    module.get(),
-                    "spirv.EntryPoint\0".as_ptr().cast(),
-                    entry_value,
-                );
-            }
-        }
+    // Finalize debug info
+    unsafe {
+        emit_ctx.debug_context.finalize_debug_info();
     }
 
-    // Debug information finalization disabled
-
-    if let Err(err) = module.verify() {
-        return Err(TranslateError::LLVMValidationError(format!("{:?}", err)));
-    }
+    module.verify().map_err(|e| {
+        TranslateError::UnexpectedError(format!("Module verification failed: {:?}", e))
+    })?;
     Ok(module.write_bitcode_to_memory())
 }
 
@@ -521,7 +565,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             unsafe {
                 if let Some(ref mut dwarf_builder) = (*debug_context_ptr).dwarf_builder {
                     // Create function type for debug info
-                    if let Ok(function_type) = dwarf_builder.create_function_type(None, &[]) {
+                    if let Ok(_function_type) = dwarf_builder.create_function_type(None, &[]) {
                         // Create function debug info
                         let function_debug_info = dwarf_builder.create_function_debug_info(
                             function_name,
@@ -530,6 +574,14 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                             true, // is definition
                             &[],  // parameter types
                         );
+
+                        // Set the function's debug info (this adds !dbg metadata)
+                        if let Err(e) =
+                            dwarf_builder.set_function_debug_info(fn_, function_debug_info)
+                        {
+                            eprintln!("Warning: Failed to set function debug info: {}", e);
+                        }
+
                         (*debug_context_ptr).current_function_debug_info =
                             Some(function_debug_info);
                     }
@@ -860,12 +912,12 @@ impl<'a> MethodEmitContext<'a> {
         let instruction_name = match statement {
             Statement::Instruction(inst) => get_instruction_name(inst),
             Statement::Variable(_) => {
-                // For variable declarations, don't increment line as they are 
+                // For variable declarations, don't increment line as they are
                 // handled separately in emit_variable with proper source mapping
                 return Ok(());
             }
             Statement::Label(_) => "label",
-            Statement::Conditional(_) => "conditional", 
+            Statement::Conditional(_) => "conditional",
             Statement::Conversion(_) => "conversion",
             Statement::Constant(_) => "constant",
             Statement::RetValue(_, _) => "ret_value",
@@ -877,8 +929,8 @@ impl<'a> MethodEmitContext<'a> {
         };
 
         // Add debug location tracking for real instructions only
-        // Limit line numbers to PTX source bounds (for atom_add.ptx: max 29 lines)
-        if !matches!(statement, Statement::Variable(_)) && self.current_line <= 29 {
+        // Don't limit line numbers - let them reflect actual PTX source
+        if !matches!(statement, Statement::Variable(_)) {
             // Set debug location before creating the instruction
             unsafe {
                 if let Err(e) = self.debug_context.add_debug_location(
@@ -891,14 +943,14 @@ impl<'a> MethodEmitContext<'a> {
                 }
             }
 
-                    // Increment line counter for next instruction only for actual PTX instructions
-        match statement {
-            Statement::Instruction(_) => {
-                // Don't increment here - it's handled in emit_instruction
-            },
-            // Don't increment for internal operations 
-            _ => {}
-        }
+            // Increment line counter for next instruction only for actual PTX instructions
+            match statement {
+                Statement::Instruction(_) => {
+                    // Don't increment here - it's handled in emit_instruction
+                }
+                // Don't increment for internal operations
+                _ => {}
+            }
         }
 
         Ok(())
@@ -1240,36 +1292,95 @@ impl<'a> MethodEmitContext<'a> {
                                             Ok(expr) => expr,
                                             Err(e) => {
                                                 eprintln!("Warning: Failed to create debug expression: {}", e);
-                                                ptr::null_mut()
+                                                // Create an empty expression instead of null
+                                                llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
+                                                    dwarf_builder.get_builder(),
+                                                    ptr::null_mut(),
+                                                    0,
+                                                )
                                             }
                                         };
 
-                                    // Create debug declare instruction
-                                    if !debug_loc.is_null() && !di_variable.is_null() {
-                                        let expression = if debug_expr.is_null() {
-                                            llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
-                                                dwarf_builder.get_builder(),
-                                                ptr::null_mut(),
-                                                0,
-                                            )
-                                        } else {
-                                            debug_expr
-                                        };
+                                    // Only call if we have valid metadata
+                                    if !debug_expr.is_null()
+                                        && !di_variable.is_null()
+                                        && !debug_loc.is_null()
+                                    {
+                                        // Use old-style debug intrinsics instead of debug records
+                                        let module = self.module;
+                                        let context = LLVMGetModuleContext(module);
+                                        let dbg_declare_name =
+                                            CString::new("llvm.dbg.declare").unwrap();
+                                        let mut dbg_declare_func =
+                                            LLVMGetNamedFunction(module, dbg_declare_name.as_ptr());
 
-                                        llvm_zluda::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd(
-                                            dwarf_builder.get_builder(),
-                                            alloca,
-                                            di_variable,
-                                            expression,
-                                            debug_loc,
-                                            LLVMGetInsertBlock(self.builder),
+                                        if dbg_declare_func.is_null() {
+                                            // Create llvm.dbg.declare function type: void(metadata, metadata, metadata)
+                                            let void_type = LLVMVoidTypeInContext(context);
+                                            let metadata_type = LLVMMetadataTypeInContext(context);
+                                            let param_types =
+                                                vec![metadata_type, metadata_type, metadata_type];
+
+                                            let func_type = LLVMFunctionType(
+                                                void_type,
+                                                param_types.as_ptr() as *mut LLVMTypeRef,
+                                                param_types.len() as u32,
+                                                0, // not variadic
+                                            );
+
+                                            dbg_declare_func = LLVMAddFunction(
+                                                module,
+                                                dbg_declare_name.as_ptr(),
+                                                func_type,
+                                            );
+                                        }
+
+                                        // Create metadata arguments
+                                        let context = LLVMGetModuleContext(module);
+                                        let alloca_metadata = LLVMValueAsMetadata(alloca);
+                                        let args = vec![
+                                            LLVMMetadataAsValue(context, alloca_metadata),
+                                            LLVMMetadataAsValue(context, di_variable),
+                                            LLVMMetadataAsValue(context, debug_expr),
+                                        ];
+
+                                        // Set debug location BEFORE creating the call - this is crucial for !dbg attachment
+                                        LLVMSetCurrentDebugLocation2(self.builder, debug_loc);
+
+                                        // Create the debug declare call
+                                        // Use the same function type that was used to declare the function
+                                        let void_type = LLVMVoidTypeInContext(self.context);
+                                        let metadata_type = LLVMMetadataTypeInContext(self.context);
+                                        let param_types = vec![metadata_type, metadata_type, metadata_type];
+                                        let func_type = LLVMFunctionType(
+                                            void_type,
+                                            param_types.as_ptr() as *mut LLVMTypeRef,
+                                            param_types.len() as u32,
+                                            0, // not variadic
+                                        );
+                                        let call_inst = LLVMBuildCall2(
+                                            self.builder,
+                                            func_type,
+                                            dbg_declare_func,
+                                            args.as_ptr() as *mut LLVMValueRef,
+                                            args.len() as u32,
+                                            CString::new("").unwrap().as_ptr(),
                                         );
 
+                                        // Ensure the call instruction has debug location attached
+                                        if !call_inst.is_null() {
+                                            LLVMSetInstDebugLocation(self.builder, call_inst);
+                                        }
+                                    } else {
                                         eprintln!(
+                                            "Warning: Skipping debug declare due to null metadata"
+                                        );
+                                    }
+
+                                    eprintln!(
                                             "DEBUG: PTX variable debug info added: {} ({}:{}) type={}, size={}, space={:?}",
                                             var_name, var_line, 0, type_name, var_size_bits, var.state_space
                                         );
-                                    }
                                 }
                             }
                         }
@@ -1303,7 +1414,7 @@ impl<'a> MethodEmitContext<'a> {
             ast::Type::Scalar(scalar_type) => {
                 let type_suffix = match scalar_type {
                     ast::ScalarType::U8 | ast::ScalarType::S8 | ast::ScalarType::B8 => "b8",
-                    ast::ScalarType::U16 | ast::ScalarType::S16 | ast::ScalarType::B16 => "b16", 
+                    ast::ScalarType::U16 | ast::ScalarType::S16 | ast::ScalarType::B16 => "b16",
                     ast::ScalarType::U32 | ast::ScalarType::S32 | ast::ScalarType::B32 => "b32",
                     ast::ScalarType::U64 | ast::ScalarType::S64 | ast::ScalarType::B64 => "b64",
                     ast::ScalarType::F16 => "f16",
@@ -1365,7 +1476,7 @@ impl<'a> MethodEmitContext<'a> {
             // Create a more meaningful name based on the variable properties
             let base_name = match var.state_space {
                 ast::StateSpace::Shared => "shared_mem",
-                ast::StateSpace::Local => "local_mem", 
+                ast::StateSpace::Local => "local_mem",
                 ast::StateSpace::Global => "global_mem",
                 ast::StateSpace::Reg => match &var.v_type {
                     ast::Type::Scalar(ast::ScalarType::U64)
@@ -1432,17 +1543,17 @@ impl<'a> MethodEmitContext<'a> {
             }
         }
 
-        // Create the debug expression (only if we have operations)
-        if expr_ops.is_empty() {
-            Ok(ptr::null_mut())
-        } else {
-            let expr = llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
-                dwarf_builder.get_builder(),
-                expr_ops.as_mut_ptr() as *mut u64,
-                expr_ops.len(),
-            );
-            Ok(expr)
-        }
+        // Always create a debug expression (empty if no operations)
+        let expr = llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
+            dwarf_builder.get_builder(),
+            if expr_ops.is_empty() {
+                ptr::null_mut()
+            } else {
+                expr_ops.as_mut_ptr() as *mut u64
+            },
+            expr_ops.len(),
+        );
+        Ok(expr)
     }
 
     /// Parse PTX register name to get register number (static version)
@@ -1487,18 +1598,24 @@ impl<'a> MethodEmitContext<'a> {
     ) -> Result<(), TranslateError> {
         // Set debug location for this instruction before emitting LLVM IR
         let instruction_name = get_instruction_name(&inst);
-        if self.current_line <= 29 {
-            unsafe {
-                if let Err(e) = self.debug_context.add_debug_location(
-                    self.builder,
-                    self.current_line,
-                    1, // column
-                    instruction_name,
-                ) {
-                    eprintln!("Warning: Failed to add debug location for instruction: {}", e);
-                }
+
+        // Add debug location for all instructions (remove line limit)
+        unsafe {
+            if let Err(e) = self.debug_context.add_debug_location(
+                self.builder,
+                self.current_line,
+                1, // column
+                instruction_name,
+            ) {
+                eprintln!(
+                    "Warning: Failed to add debug location for instruction: {}",
+                    e
+                );
             }
         }
+
+        // Increment line number for next instruction
+        self.current_line += 1;
         match inst {
             ast::Instruction::Mov { data, arguments } => self.emit_mov(data, arguments),
             ast::Instruction::Ld { data, arguments } => self.emit_ld(data, arguments),
@@ -1568,9 +1685,69 @@ impl<'a> MethodEmitContext<'a> {
         let builder = self.builder;
         let type_ = get_type(self.context, &data.typ)?;
         let ptr = self.resolver.value(arguments.src)?;
-        self.resolver.with_result(arguments.dst, |dst| unsafe {
+        let loaded_value = self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildLoad2(builder, type_, ptr, dst)
         });
+
+        // Add debug value tracking for load instruction
+        if self.debug_context.debug_enabled {
+            // Create variable name for the destination
+            let var_name = format!("%r{}", arguments.dst.0);
+
+            // Get current line number (use actual PTX line, not hardcoded)
+            let current_line = self.current_line;
+
+            // Try to create a proper llvm.dbg.value call using existing infrastructure
+            if let Some(function_di) = self.debug_context.current_function_debug_info {
+                unsafe {
+                    // Create a simple debug variable for this load
+                    if let Some(ref dwarf_builder) = self.debug_context.dwarf_builder {
+                        // Create basic type for the variable (i32 for simplicity)
+                        let debug_type = dwarf_builder
+                            .create_basic_type("i32", 32, 0x05) // DW_ATE_signed
+                            .unwrap_or(ptr::null_mut());
+
+                        if !debug_type.is_null() {
+                            // Create DILocalVariable for the load
+                            let var_name_cstr = std::ffi::CString::new(var_name.clone()).unwrap();
+                            let di_variable =
+                                llvm_zluda::debuginfo::LLVMDIBuilderCreateAutoVariable(
+                                    dwarf_builder.get_builder(),
+                                    function_di,
+                                    var_name_cstr.as_ptr(),
+                                    var_name_cstr.as_bytes().len(),
+                                    dwarf_builder.file,
+                                    current_line,
+                                    debug_type,
+                                    1, // always preserve
+                                    0, // LLVMDIFlagZero
+                                    0, // alignment
+                                );
+
+                            // Use the existing track_ptx_variable_assignment function
+                            if let Err(e) = self.debug_context.track_ptx_variable_assignment(
+                                arguments.dst, // dst_id: SpirvWord
+                                loaded_value,  // src_value: LLVMValueRef
+                                current_line,  // line: u32
+                                function_di,   // function_di: LLVMMetadataRef
+                                self.builder,  // builder: LLVMBuilderRef
+                            ) {
+                                eprintln!("Warning: Failed to create debug value: {}", e);
+                            } else {
+                                eprintln!("DEBUG_VALUE: {}:{} <- loaded_value (line {}) [llvm.dbg.value created]", "atom_add", var_name, current_line);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback to simple debug output
+                eprintln!(
+                    "DEBUG_VALUE: {}:{} <- loaded_value (line {})",
+                    "atom_add", var_name, current_line
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -1864,8 +2041,133 @@ impl<'a> MethodEmitContext<'a> {
         _data: ast::MovDetails,
         arguments: ast::MovArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
-        self.resolver
-            .register(arguments.dst, self.resolver.value(arguments.src)?);
+        let src_value = self.resolver.value(arguments.src)?;
+        self.resolver.register(arguments.dst, src_value);
+
+        // Add debug value tracking for mov instruction using llvm.dbg.value
+        if self.debug_context.debug_enabled {
+            // Create variable name for the destination
+            let var_name = format!("%r{}", arguments.dst.0);
+
+            // Get current line number (use actual PTX line, not hardcoded)
+            let current_line = self.current_line;
+
+            // Create debug info for this variable if we have function debug info
+            if let Some(function_di) = self.debug_context.current_function_debug_info {
+                unsafe {
+                    // Create a simple debug variable for this assignment
+                    if let Some(ref dwarf_builder) = self.debug_context.dwarf_builder {
+                        // Create basic type for the variable (i32 for simplicity)
+                        let debug_type = dwarf_builder
+                            .create_basic_type("i32", 32, 0x05) // DW_ATE_signed
+                            .unwrap_or(ptr::null_mut());
+
+                        if !debug_type.is_null() {
+                            // Create DILocalVariable for the assignment
+                            let var_name_cstr = std::ffi::CString::new(var_name.clone()).unwrap();
+                            let di_variable =
+                                llvm_zluda::debuginfo::LLVMDIBuilderCreateAutoVariable(
+                                    dwarf_builder.get_builder(),
+                                    function_di,
+                                    var_name_cstr.as_ptr(),
+                                    var_name_cstr.as_bytes().len(),
+                                    dwarf_builder.file,
+                                    current_line,
+                                    debug_type,
+                                    1, // always preserve
+                                    0, // LLVMDIFlagZero
+                                    0, // alignment
+                                );
+
+                            // Create debug location
+                            let debug_loc = llvm_zluda::debuginfo::LLVMDIBuilderCreateDebugLocation(
+                                dwarf_builder.context,
+                                current_line,
+                                1, // column
+                                function_di,
+                                ptr::null_mut(), // inlined at
+                            );
+
+                            // Create empty debug expression
+                            let debug_expr = llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
+                                dwarf_builder.get_builder(),
+                                ptr::null_mut(),
+                                0,
+                            );
+
+                            // Create the llvm.dbg.value call using the traditional method
+                            let context = unsafe { LLVMGetModuleContext(dwarf_builder.module) };
+                            let module = dwarf_builder.module;
+
+                            // Get or create the llvm.dbg.value intrinsic function
+                            let dbg_value_name = std::ffi::CString::new("llvm.dbg.value").unwrap();
+                            let dbg_value_func =
+                                unsafe { LLVMGetNamedFunction(module, dbg_value_name.as_ptr()) };
+
+                            let dbg_value_func = if dbg_value_func.is_null() {
+                                // Create llvm.dbg.value function type: void(metadata, metadata, metadata)
+                                let void_type = unsafe { LLVMVoidTypeInContext(context) };
+                                let metadata_type = unsafe { LLVMMetadataTypeInContext(context) };
+                                let param_types = vec![metadata_type, metadata_type, metadata_type];
+
+                                let func_type = unsafe {
+                                    LLVMFunctionType(
+                                        void_type,
+                                        param_types.as_ptr() as *mut LLVMTypeRef,
+                                        param_types.len() as u32,
+                                        0, // not variadic
+                                    )
+                                };
+
+                                unsafe {
+                                    LLVMAddFunction(module, dbg_value_name.as_ptr(), func_type)
+                                }
+                            } else {
+                                dbg_value_func
+                            };
+
+                            // Create metadata arguments
+                            let value_metadata = unsafe { LLVMValueAsMetadata(src_value) };
+                            let args = vec![value_metadata, di_variable, debug_expr];
+
+                            // Create the debug value call
+                            // Use the same function type that was used to declare the function
+                            let call_inst = unsafe {
+                                let void_type = LLVMVoidTypeInContext(self.context);
+                                let metadata_type = LLVMMetadataTypeInContext(self.context);
+                                let param_types = vec![metadata_type, metadata_type, metadata_type];
+                                let function_type = LLVMFunctionType(
+                                    void_type,
+                                    param_types.as_ptr() as *mut LLVMTypeRef,
+                                    param_types.len() as u32,
+                                    0, // not variadic
+                                );
+                                LLVMBuildCall2(
+                                    self.builder,
+                                    function_type,
+                                    dbg_value_func,
+                                    args.as_ptr() as *mut LLVMValueRef,
+                                    args.len() as u32,
+                                    std::ffi::CString::new("").unwrap().as_ptr(),
+                                )
+                            };
+
+                            // Set debug location for the call
+                            unsafe { LLVMSetInstDebugLocation(self.builder, call_inst) };
+
+                            eprintln!(
+                                "DEBUG_VALUE: {}:{} <- value (line {})",
+                                "atom_add", var_name, current_line
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Set debug location for this instruction
+            self.set_debug_location_for_ptx_instruction("mov");
+        }
+
         Ok(())
     }
 
@@ -3731,9 +4033,9 @@ fn get_pointer_type<'ctx>(
 // https://llvm.org/docs/AMDGPUUsage.html#memory-scopes
 fn get_scope(scope: ast::MemScope) -> Result<*const i8, TranslateError> {
     Ok(match scope {
-        ast::MemScope::Cta => c"workgroup-one-as",
-        ast::MemScope::Gpu => c"agent-one-as",
-        ast::MemScope::Sys => c"one-as",
+        ast::MemScope::Cta => c"", // 空字符串表示默认作用域
+        ast::MemScope::Gpu => c"", // 空字符串表示默认作用域
+        ast::MemScope::Sys => c"", // 空字符串表示默认作用域
         ast::MemScope::Cluster => todo!(),
     }
     .as_ptr())

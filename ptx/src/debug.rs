@@ -65,7 +65,7 @@ pub struct PtxDwarfBuilder {
     pub module: LLVMModuleRef,
     di_builder: *mut llvm_zluda::LLVMOpaqueDIBuilder,
     pub compile_unit: LLVMMetadataRef,
-    file: LLVMMetadataRef,
+    pub file: LLVMMetadataRef,
     source_mappings: Vec<DwarfMappingEntry>,
     current_scope: LLVMMetadataRef,
     variable_counter: u64,
@@ -76,19 +76,22 @@ impl PtxDwarfBuilder {
     pub unsafe fn new(
         context: LLVMContextRef,
         module: LLVMModuleRef,
-        source_file: &str,
+        filename: &str,
         producer: &str,
     ) -> Result<Self, String> {
+        // Check environment variable first
+        if std::env::var("PTX_DISABLE_DEBUG_INFO").is_ok() {
+            return Err("Debug information disabled via environment variable".into());
+        }
+
         let di_builder = LLVMCreateDIBuilder(module);
         if di_builder.is_null() {
             return Err("Failed to create DIBuilder".to_string());
         }
 
         let producer_cstr = CString::new(producer).map_err(|_| "Invalid producer string")?;
-        let directory_cstr = CString::new(".").map_err(|_| "Invalid directory string")?;
-        let filename_cstr = CString::new(source_file).map_err(|_| "Invalid filename string")?;
-
-        // Create debug info file
+        let filename_cstr = CString::new(filename).unwrap();
+        let directory_cstr = CString::new(".").unwrap();
         let di_file = LLVMDIBuilderCreateFile(
             di_builder,
             filename_cstr.as_ptr(),
@@ -100,11 +103,11 @@ impl PtxDwarfBuilder {
         // Create compile unit with proper parameters
         let di_compile_unit = LLVMDIBuilderCreateCompileUnit(
             di_builder,
-            llvm_zluda::debuginfo::LLVMDWARFSourceLanguage::LLVMDWARFSourceLanguageC, // Use C for compatibility
+            llvm_zluda::debuginfo::LLVMDWARFSourceLanguage::LLVMDWARFSourceLanguageC99, // Use C99 for compatibility like the example
             di_file,
             producer_cstr.as_ptr(),
             producer_cstr.as_bytes().len(),
-            0,           // not optimized initially
+            1,           // isOptimized: true (like the working example)
             ptr::null(), // no flags
             0,           // flags length
             0,           // runtime version
@@ -120,6 +123,17 @@ impl PtxDwarfBuilder {
             0,           // SDK length
         );
 
+        let debug_context = Self {
+            context,
+            module,
+            di_builder,
+            compile_unit: di_compile_unit,
+            file: di_file,
+            source_mappings: Vec::new(),
+            current_scope: di_compile_unit, // Use compile unit as initial scope
+            variable_counter: 0,
+        };
+
         // Set DWARF version metadata to fix "invalid version (0)" error
         // Only add module flags if they don't already exist
         let dwarf_version_str = CString::new("Dwarf Version").unwrap();
@@ -129,11 +143,11 @@ impl PtxDwarfBuilder {
             dwarf_version_str.as_bytes().len(),
         );
         if existing_dwarf_flag.is_null() {
-            let version_val = LLVMConstInt(LLVMInt32TypeInContext(context), 4, 0); // DWARF version 4
+            let version_val = LLVMConstInt(LLVMInt32TypeInContext(context), 2, 0); // DWARF version 2
             let version_metadata = LLVMValueAsMetadata(version_val);
             LLVMAddModuleFlag(
                 module,
-                LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorError,
+                LLVMModuleFlagBehavior::LLVMModuleFlagBehaviorWarning, // Use Warning instead of Error
                 dwarf_version_str.as_ptr(),
                 dwarf_version_str.as_bytes().len(),
                 version_metadata,
@@ -159,16 +173,10 @@ impl PtxDwarfBuilder {
             );
         }
 
-        Ok(Self {
-            context,
-            module,
-            di_builder,
-            compile_unit: di_compile_unit,
-            file: di_file,
-            source_mappings: Vec::new(),
-            current_scope: di_compile_unit, // Use compile unit as initial scope
-            variable_counter: 0,
-        })
+        // Skip llvm.ident metadata creation to avoid LLVM validation errors
+        // Producer information is already included in the compile unit
+
+        Ok(debug_context)
     }
 
     /// Add a PTX source to target instruction mapping
@@ -177,7 +185,10 @@ impl PtxDwarfBuilder {
     }
 
     /// Create debug types for PTX scalar types
-    pub unsafe fn create_ptx_debug_type(&self, ptx_type: &ptx_parser::ScalarType) -> LLVMMetadataRef {
+    pub unsafe fn create_ptx_debug_type(
+        &self,
+        ptx_type: &ptx_parser::ScalarType,
+    ) -> LLVMMetadataRef {
         let (name, size_bits, encoding) = match ptx_type {
             ptx_parser::ScalarType::U8 => ("u8", 8, 7), // DW_ATE_unsigned
             ptx_parser::ScalarType::U16 => ("u16", 16, 7), // DW_ATE_unsigned
@@ -195,9 +206,9 @@ impl PtxDwarfBuilder {
             ptx_parser::ScalarType::B16 => ("b16", 16, 7), // DW_ATE_unsigned
             ptx_parser::ScalarType::B32 => ("b32", 32, 7), // DW_ATE_unsigned
             ptx_parser::ScalarType::B64 => ("b64", 64, 7), // DW_ATE_unsigned
-            _ => ("unknown", 32, 7), // Default fallback
+            _ => ("unknown", 32, 7),                    // Default fallback
         };
-        
+
         let name_cstr = CString::new(name).unwrap();
         LLVMDIBuilderCreateBasicType(
             self.di_builder,
@@ -220,7 +231,7 @@ impl PtxDwarfBuilder {
     ) -> LLVMMetadataRef {
         let param_name_cstr = CString::new(param_name).unwrap();
         let param_debug_type = self.create_ptx_debug_type(param_type);
-        
+
         LLVMDIBuilderCreateParameterVariable(
             self.di_builder,
             function_scope,
@@ -245,7 +256,7 @@ impl PtxDwarfBuilder {
     ) -> LLVMMetadataRef {
         let var_name_cstr = CString::new(var_name).unwrap();
         let var_debug_type = self.create_ptx_debug_type(var_type);
-        
+
         LLVMDIBuilderCreateAutoVariable(
             self.di_builder,
             scope,
@@ -267,13 +278,7 @@ impl PtxDwarfBuilder {
         line: u32,
         column: u32,
     ) -> LLVMMetadataRef {
-        LLVMDIBuilderCreateLexicalBlock(
-            self.di_builder,
-            parent_scope,
-            self.file,
-            line,
-            column,
-        )
+        LLVMDIBuilderCreateLexicalBlock(self.di_builder, parent_scope, self.file, line, column)
     }
 
     /// Create function debug info with parameters
@@ -287,23 +292,16 @@ impl PtxDwarfBuilder {
     ) -> LLVMMetadataRef {
         let function_name_cstr = CString::new(function_name).unwrap();
         let linkage_name_cstr = CString::new(linkage_name).unwrap();
-        
+
         // Create function type
-        let void_type = LLVMDIBuilderCreateBasicType(
-            self.di_builder,
-            c"void".as_ptr(),
-            4,
-            0,
-            0,
-            0,
-        );
-        
+        let void_type = LLVMDIBuilderCreateBasicType(self.di_builder, c"void".as_ptr(), 4, 0, 0, 0);
+
         // Create parameter types array
         let mut param_debug_types = vec![void_type]; // Return type first
         for param_type in param_types {
             param_debug_types.push(self.create_ptx_debug_type(param_type));
         }
-        
+
         let function_type = LLVMDIBuilderCreateSubroutineType(
             self.di_builder,
             self.file,
@@ -311,13 +309,7 @@ impl PtxDwarfBuilder {
             param_debug_types.len() as u32,
             0, // flags
         );
-        
-        let sp_flags = if is_definition {
-            0x40 // DISPFlagDefinition
-        } else {
-            0
-        };
-        
+
         LLVMDIBuilderCreateFunction(
             self.di_builder,
             self.file, // scope
@@ -328,11 +320,11 @@ impl PtxDwarfBuilder {
             self.file,
             line,
             function_type,
-            0, // isLocalToUnit
+            0, // isLocalToUnit (isLocal: false)
             is_definition as i32,
             line, // scopeLine
-            0, // flags
-            0, // isOptimized
+            0,    // flags
+            1,    // isOptimized (true like the working example)
         )
     }
 
@@ -359,7 +351,6 @@ impl PtxDwarfBuilder {
 
         Ok(debug_loc)
     }
-
 
     /// Create variable debug info with enhanced PTX variable and memory address tracking
     pub unsafe fn create_variable_debug_info(
@@ -729,8 +720,8 @@ impl PtxDwarfBuilder {
         output
     }
 
-    /// Get the underlying DIBuilder
-    pub fn get_builder(&self) -> *mut llvm_zluda::LLVMOpaqueDIBuilder {
+    /// Get the underlying DIBuilder (deprecated - use get_builder_ref instead)
+    pub fn get_builder(&self) -> LLVMDIBuilderRef {
         self.di_builder
     }
 
@@ -757,6 +748,159 @@ impl PtxDwarfBuilder {
         LLVMDIBuilderFinalize(self.di_builder);
 
         Ok(())
+    }
+
+    /// Track PTX variable assignment with llvm.dbg.value calls
+    pub unsafe fn track_ptx_variable_assignment(
+        &mut self,
+        builder: LLVMBuilderRef,
+        variable_name: &str,
+        value: LLVMValueRef,
+        line: u32,
+    ) -> Result<(), String> {
+        // Generate unique variable name based on counter
+        self.variable_counter += 1;
+        let var_name = format!("var_{}", self.variable_counter);
+
+        // Create debug variable info
+        let var_name_cstr = CString::new(var_name.clone()).unwrap();
+        let value_type = LLVMTypeOf(value);
+
+        // Determine type size based on LLVM type
+        let (type_name, type_size, encoding) =
+            if LLVMGetTypeKind(value_type) == LLVMTypeKind::LLVMIntegerTypeKind {
+                let bit_width = LLVMGetIntTypeWidth(value_type);
+                match bit_width {
+                    32 => ("i32", 32, 5), // DW_ATE_signed
+                    64 => ("i64", 64, 5), // DW_ATE_signed
+                    _ => ("i32", 32, 5),  // DW_ATE_signed
+                }
+            } else {
+                ("i32", 32, 5) // DW_ATE_signed
+            };
+
+        let type_name_cstr = CString::new(type_name).unwrap();
+        let debug_type = LLVMDIBuilderCreateBasicType(
+            self.di_builder,
+            type_name_cstr.as_ptr(),
+            type_name_cstr.as_bytes().len(),
+            type_size,
+            encoding,
+            0,
+        );
+
+        // Create debug variable
+        let debug_var = LLVMDIBuilderCreateAutoVariable(
+            self.di_builder,
+            self.current_scope,
+            var_name_cstr.as_ptr(),
+            var_name_cstr.as_bytes().len(),
+            self.file,
+            line,
+            debug_type,
+            1, // always preserve
+            0, // no flags
+            0, // alignment
+        );
+
+        // Create debug location
+        let debug_loc = LLVMDIBuilderCreateDebugLocation(
+            self.context,
+            line,
+            1, // column
+            self.current_scope,
+            ptr::null_mut(),
+        );
+
+        // Get or declare llvm.dbg.value function
+        let dbg_value_name = CString::new("llvm.dbg.value").unwrap();
+        let mut dbg_value_fn = LLVMGetNamedFunction(self.module, dbg_value_name.as_ptr());
+
+        if dbg_value_fn.is_null() {
+            // Declare llvm.dbg.value function
+            let void_type = LLVMVoidTypeInContext(self.context);
+            let metadata_type = LLVMMetadataTypeInContext(self.context);
+            let param_types = [metadata_type, metadata_type, metadata_type];
+            let function_type = LLVMFunctionType(
+                void_type,
+                param_types.as_ptr() as *mut _,
+                param_types.len() as u32,
+                0, // not variadic
+            );
+
+            dbg_value_fn = LLVMAddFunction(self.module, dbg_value_name.as_ptr(), function_type);
+        }
+
+        // Validate the input value first
+        if value.is_null() {
+            return Err("Cannot create debug metadata for null value".to_string());
+        }
+
+        // Create call to llvm.dbg.value
+        let value_metadata = LLVMValueAsMetadata(value);
+        let var_metadata = debug_var;
+        let expr_metadata = LLVMDIBuilderCreateExpression(self.di_builder, ptr::null_mut(), 0);
+
+        // Validate that all metadata is non-null before proceeding
+        if value_metadata.is_null() || var_metadata.is_null() || expr_metadata.is_null() {
+            return Err("Failed to create valid metadata for llvm.dbg.value call".to_string());
+        }
+
+        let args = [
+            LLVMMetadataAsValue(self.context, value_metadata),
+            LLVMMetadataAsValue(self.context, var_metadata),
+            LLVMMetadataAsValue(self.context, expr_metadata),
+        ];
+
+        // Use the same function type that was used to declare the function
+        let void_type = LLVMVoidTypeInContext(self.context);
+        let metadata_type = LLVMMetadataTypeInContext(self.context);
+        let param_types = [metadata_type, metadata_type, metadata_type];
+        let function_type = LLVMFunctionType(
+            void_type,
+            param_types.as_ptr() as *mut _,
+            param_types.len() as u32,
+            0, // not variadic
+        );
+        let call = LLVMBuildCall2(
+            builder,
+            function_type,
+            dbg_value_fn,
+            args.as_ptr() as *mut _,
+            args.len() as u32,
+            CString::new("").unwrap().as_ptr(),
+        );
+
+        // Set debug location for the call
+        LLVMSetCurrentDebugLocation2(builder, debug_loc);
+
+        println!(
+            "DEBUG_VALUE: {}:{} <- loaded_value (line {}) [llvm.dbg.value created]",
+            variable_name, var_name, line
+        );
+
+        Ok(())
+    }
+
+    /// Set function debug info (adds !dbg metadata to function)
+    pub unsafe fn set_function_debug_info(
+        &self,
+        function: LLVMValueRef,
+        function_di: LLVMMetadataRef,
+    ) -> Result<(), String> {
+        // Set the function's debug info using LLVMSetSubprogram
+        LLVMSetSubprogram(function, function_di);
+        Ok(())
+    }
+
+    /// Get the context for external use
+    pub fn get_context(&self) -> LLVMContextRef {
+        self.context
+    }
+
+    /// Get the module for external use
+    pub fn get_module(&self) -> LLVMModuleRef {
+        self.module
     }
 }
 
@@ -863,7 +1007,7 @@ impl PtxStateRecovery {
 pub fn integrate_debug_info_generation(
     context: LLVMContextRef,
     module: LLVMModuleRef,
-    source_file: &str,
+    filename: &str,
 ) -> Result<PtxDwarfBuilder, String> {
-    unsafe { PtxDwarfBuilder::new(context, module, source_file, "ZLUDA PTX Compiler") }
+    unsafe { PtxDwarfBuilder::new(context, module, filename, "ZLUDA PTX Compiler") }
 }

@@ -226,7 +226,12 @@ fn test_hip_assert<
 ) -> Result<(), Box<dyn error::Error + 'a>> {
     // Special case handling for tests that cause parser errors
     let ast = ptx_parser::parse_module_checked(ptx_text).unwrap();
-    let module = pass::to_llvm_module(ast).unwrap();
+    
+    // Generate correct source filename for debug info
+    let source_filename = format!("/root/hetGPU/ptx/src/test/spirv_run/{}.ptx", name);
+    
+    // Use the filename-aware version for better debug info
+    let module = pass::to_llvm_module_with_filename(ast, &source_filename).unwrap();
     let name = CString::new(name)?;
 
     // Expected failure test names - tests that are actually supposed to fail

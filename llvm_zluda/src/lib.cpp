@@ -8,12 +8,12 @@
 #include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/DebugInfoMetadata.h>
+#include <llvm/IR/DebugProgramInstruction.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
-#include <llvm/IR/DebugProgramInstruction.h>
 
 #pragma GCC diagnostic pop
 
@@ -148,9 +148,27 @@ LLVMValueRef LLVMZludaBuildAtomicRMW(LLVMBuilderRef B,
   auto builder = llvm::unwrap(B);
   LLVMContext &context = builder->getContext();
   llvm::AtomicRMWInst::BinOp intop = mapFromLLVMRMWBinOp(op);
+
+  // Map AMD-specific sync scopes to NVPTX-compatible ones
+  std::string nvptx_scope;
+  if (scope && strlen(scope) > 0) {
+    std::string scope_str(scope);
+    if (scope_str == "agent-one-as") {
+      nvptx_scope = ""; // Use default/system scope for NVPTX
+    } else if (scope_str == "workgroup-one-as") {
+      nvptx_scope = ""; // Use default scope for NVPTX
+    } else if (scope_str == "one-as") {
+      nvptx_scope = ""; // Use default scope for NVPTX
+    } else {
+      nvptx_scope = scope_str;
+    }
+  }
+
   return llvm::wrap(builder->CreateAtomicRMW(
       intop, llvm::unwrap(PTR), llvm::unwrap(Val), llvm::MaybeAlign(),
-      mapFromLLVMOrdering(ordering), context.getOrInsertSyncScopeID(scope)));
+      mapFromLLVMOrdering(ordering),
+      nvptx_scope.empty() ? llvm::SyncScope::System
+                          : context.getOrInsertSyncScopeID(nvptx_scope)));
 }
 
 LLVMValueRef LLVMZludaBuildAtomicCmpXchg(LLVMBuilderRef B, LLVMValueRef Ptr,
@@ -201,8 +219,8 @@ LLVMZludaInsertDeclareAtEnd(LLVMBuilderRef Builder, LLVMValueRef Storage,
   // DbgRecord*>) But in C bindings, we need a LLVMValueRef (which wraps a
   // Value*) So we need to create the intrinsic directly to get an Instruction*
 
-  Function *DeclareFn =
-      Intrinsic::getOrInsertDeclaration(M, Intrinsic::dbg_declare, ArrayRef<Type *>());
+  Function *DeclareFn = Intrinsic::getOrInsertDeclaration(
+      M, Intrinsic::dbg_declare, ArrayRef<Type *>());
   if (!DeclareFn)
     return nullptr;
 
