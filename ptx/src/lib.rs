@@ -51,32 +51,20 @@ fn extract_filename_from_ptx(ptx_source: &str) -> Option<String> {
             } else {
                 line.strip_prefix(".entry").unwrap_or(line).trim()
             };
-
+            println!("ZLUDA DEBUG: after_entry: {}", after_entry);
             if let Some(end) = after_entry.find('(') {
                 let kernel_name = after_entry[..end].trim();
                 if !kernel_name.is_empty() {
-                    // For common test files, use their full paths
-                    match kernel_name {
-                        "atom_add" => {
-                            return Some(
-                                "/root/hetGPU/ptx/src/test/spirv_run/atom_add.ptx".to_string(),
-                            )
-                        }
-                        "atom_inc" => {
-                            return Some(
-                                "/root/hetGPU/ptx/src/test/spirv_run/atom_inc.ptx".to_string(),
-                            )
-                        }
-                        "atom_add_float" => {
-                            return Some(
-                                "/root/hetGPU/ptx/src/test/spirv_run/atom_add_float.ptx"
-                                    .to_string(),
-                            )
-                        }
-                        "add" => {
-                            return Some("/root/hetGPU/ptx/src/test/spirv_run/add.ptx".to_string())
-                        }
-                        _ => return Some(format!("{}.ptx", kernel_name)),
+                    // Check if the file exists in the test directory
+                    let test_path = format!(
+                        "/root/hetGPU/ptx/src/test/spirv_run/{}.ptx",
+                        kernel_name
+                    );
+                    if std::path::Path::new(&test_path).exists() {
+                        return Some(test_path);
+                    } else {
+                        // Fallback to just the kernel name with .ptx extension
+                        return Some(format!("{}.ptx", kernel_name));
                     }
                 }
             }
@@ -279,12 +267,19 @@ pub fn ptx_to_llvm_to_ptx_with_sass_mapping(
 
 /// Simplified PTX compilation: PTX -> LLVM IR with debug info -> llc-20 -> PTX
 pub fn ptx_to_llvm_with_debug_then_llc(ptx_source: &str) -> Result<String, TranslateError> {
+    // Try to extract filename from PTX source or use a default
+    let filename = extract_filename_from_ptx(ptx_source).unwrap_or_else(|| "kernel.ptx".to_string());
+    ptx_to_llvm_with_debug_then_llc_with_filename(ptx_source, &filename)
+}
+
+/// PTX compilation with explicit filename: PTX -> LLVM IR with debug info -> llc-20 -> PTX
+pub fn ptx_to_llvm_with_debug_then_llc_with_filename(ptx_source: &str, source_filename: &str) -> Result<String, TranslateError> {
     // Parse PTX source
     let ast = ptx_parser::parse_module_checked(ptx_source)
         .map_err(|_| TranslateError::UnexpectedError("PTX parsing failed".to_string()))?;
 
-    // Convert PTX to LLVM IR with debug information
-    let module = to_llvm_module_with_debug_round_trip(ast)?;
+    // Convert PTX to LLVM IR with debug information using the provided filename
+    let module = to_llvm_module_with_filename(ast, source_filename)?;
 
     // Validate DWARF debug information
     unsafe {
@@ -297,7 +292,6 @@ pub fn ptx_to_llvm_with_debug_then_llc(ptx_source: &str) -> Result<String, Trans
 
     // Get LLVM IR as string
     let llvm_ir = module
-        .0
         .print_to_string()
         .map_err(|e| TranslateError::UnexpectedError(format!("Failed to get LLVM IR: {}", e)))?;
 
@@ -319,12 +313,8 @@ pub fn ptx_to_llvm_with_debug_then_llc(ptx_source: &str) -> Result<String, Trans
     let llc_output = std::process::Command::new("llc-20")
         .args(&[
             "-mtriple=nvptx64-nvidia-cuda", // NVPTX target triple
-            "-mcpu=sm_50",                  // Target compute capability
+            "-mcpu=sm_61",                  // Target compute capability
             "-filetype=asm",                // Generate assembly (PTX)
-            "--dwarf-version=4",            // DWARF debug info version
-            "-g",                           // Generate debug information
-            "--force-dwarf-frame-section",  // Force generation of debug frame section
-            "--emit-dwarf-unwind=always",   // Emit DWARF unwind info
             "-O0",                          // No optimization to preserve debug info
             &llvm_ir_path,
             "-o",
@@ -350,6 +340,32 @@ pub fn ptx_to_llvm_with_debug_then_llc(ptx_source: &str) -> Result<String, Trans
         "ZLUDA DEBUG: Generated PTX with debug info saved to: {}",
         output_ptx_path
     );
+
+    // Run fix_nv.sh script to fix the generated PTX
+    eprintln!("ZLUDA DEBUG: Running fix_nv.sh to fix the generated PTX...");
+    let fix_script_path = std::path::Path::new("/tmp/fix_nv.sh");
+
+    if fix_script_path.exists() {
+        let fix_output = std::process::Command::new("bash")
+            .args(&[fix_script_path.to_str().unwrap(), &output_ptx_path])
+            .output()
+            .map_err(|e| {
+                TranslateError::UnexpectedError(format!("Failed to run fix_nv.sh: {}", e))
+            })?;
+
+        if !fix_output.status.success() {
+            let stderr = String::from_utf8_lossy(&fix_output.stderr);
+            eprintln!("ZLUDA DEBUG: Warning - fix_nv.sh script failed: {}", stderr);
+        } else {
+            eprintln!("ZLUDA DEBUG: Successfully fixed PTX with fix_nv.sh");
+            // Re-read the fixed PTX
+            generated_ptx = std::fs::read_to_string(&output_ptx_path).map_err(|e| {
+                TranslateError::UnexpectedError(format!("Failed to read fixed PTX: {}", e))
+            })?;
+        }
+    } else {
+        eprintln!("ZLUDA DEBUG: Warning - fix_nv.sh not found in the current directory");
+    }
 
     // If the PTX doesn't contain proper debug sections, add them manually
     if !generated_ptx.contains(".debug_info") || !generated_ptx.contains(".debug_loc") {

@@ -317,44 +317,35 @@ pub(super) fn run_with_filename<'input>(
     source_filename: &str,
 ) -> Result<MemoryBuffer, TranslateError> {
     let context = Context::new();
-    let module = Module::new(&context, LLVM_UNNAMED);
-
-    // Set the module to use the old debug intrinsics format (llvm.dbg.value)
-    unsafe { LLVMSetIsNewDbgInfoFormat(module.get(), 0) };
-
-    let target_triple = CString::new("nvptx64-nvidia-cuda").map_err(|_| error_unreachable())?;
-    unsafe { LLVMSetTarget(module.get(), target_triple.as_ptr()) };
-
-    // Set proper data layout for NVPTX
-    let data_layout = CString::new("e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v16:16:16-v32:32:32-v64:64:64-v128:128:128-n16:32:64").map_err(|_| error_unreachable())?;
-    unsafe { LLVMSetDataLayout(module.get(), data_layout.as_ptr()) };
-
+    let module = Module::new(&context, c"zluda_kernel");
+    let mut emit_ctx = ModuleEmitContext::new(&context, &module, &id_defs);
     let mut kernel_entries = Vec::new();
 
-    // Declare debug intrinsics
-    declare_debug_intrinsics(&context, &module)?;
-
-    let mut emit_ctx = ModuleEmitContext::new(&context, &module, &id_defs);
-
-    // Initialize debug info with custom source filename
-    unsafe {
-        eprintln!(
-            "ZLUDA DEBUG TRACE: Initializing debug info with filename: {}",
-            source_filename
-        );
-        if let Err(e) = emit_ctx.debug_context.initialize_debug_info_with_details(
-            context.get(),
-            module.get(),
-            source_filename, // Use custom source filename
-            "ZLUDA PTX Compiler with Enhanced Debug Support",
-            0, // optimization level
-        ) {
-            eprintln!("Warning: Failed to initialize debug info: {}", e);
-        } else {
+    // Check if debug info is disabled via environment variable
+    if std::env::var("PTX_DISABLE_DEBUG_INFO").is_ok() {
+        eprintln!("ZLUDA DEBUG TRACE: Debug info disabled by environment variable");
+    } else {
+        // Only initialize debug info if not disabled
+        unsafe {
             eprintln!(
-                "ZLUDA DEBUG TRACE: Debug info initialized successfully with {}",
+                "ZLUDA DEBUG TRACE: Initializing debug info with filename: {}",
                 source_filename
             );
+            if let Err(e) = emit_ctx.debug_context.initialize_debug_info_with_details(
+                context.get(),
+                module.get(),
+                source_filename, // Use custom source filename
+                "ZLUDA PTX Compiler with Enhanced Debug Support",
+                0, // optimization level
+            ) {
+                eprintln!("Warning: Failed to initialize debug info: {}", e);
+                // Continue even if debug info initialization fails
+            } else {
+                eprintln!(
+                    "ZLUDA DEBUG TRACE: Debug info initialized successfully with {}",
+                    source_filename
+                );
+            }
         }
     }
 
@@ -1351,7 +1342,8 @@ impl<'a> MethodEmitContext<'a> {
                                         // Use the same function type that was used to declare the function
                                         let void_type = LLVMVoidTypeInContext(self.context);
                                         let metadata_type = LLVMMetadataTypeInContext(self.context);
-                                        let param_types = vec![metadata_type, metadata_type, metadata_type];
+                                        let param_types =
+                                            vec![metadata_type, metadata_type, metadata_type];
                                         let func_type = LLVMFunctionType(
                                             void_type,
                                             param_types.as_ptr() as *mut LLVMTypeRef,
@@ -1974,7 +1966,23 @@ impl<'a> MethodEmitContext<'a> {
         if data.qualifier != ast::LdStQualifier::Weak {
             todo!()
         }
-        unsafe { LLVMBuildStore(self.builder, value, ptr) };
+
+        // For const space, we need to convert to an appropriate address space that allows writes
+        let actual_ptr = if data.state_space == ast::StateSpace::Const {
+            eprintln!("ZLUDA DEBUG: Converting const space to local for store instruction");
+            // Get the local address space pointer type
+            let local_ptr_type = unsafe {
+                let pointee_type = LLVMGetElementType(LLVMTypeOf(ptr));
+                LLVMPointerType(pointee_type, PRIVATE_ADDRESS_SPACE)
+            };
+
+            // Bitcast to the writable address space
+            unsafe { LLVMBuildBitCast(self.builder, ptr, local_ptr_type, LLVM_UNNAMED.as_ptr()) }
+        } else {
+            ptr
+        };
+
+        unsafe { LLVMBuildStore(self.builder, value, actual_ptr) };
         Ok(())
     }
 
@@ -2128,7 +2136,13 @@ impl<'a> MethodEmitContext<'a> {
 
                             // Create metadata arguments
                             let value_metadata = unsafe { LLVMValueAsMetadata(src_value) };
-                            let args = vec![value_metadata, di_variable, debug_expr];
+
+                            // Wrap metadata values as LLVM values for the call
+                            let args = vec![
+                                unsafe { LLVMMetadataAsValue(context, value_metadata) },
+                                unsafe { LLVMMetadataAsValue(context, di_variable) },
+                                unsafe { LLVMMetadataAsValue(context, debug_expr) },
+                            ];
 
                             // Create the debug value call
                             // Use the same function type that was used to declare the function

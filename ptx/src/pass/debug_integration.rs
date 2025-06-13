@@ -13,6 +13,7 @@ use llvm_zluda::prelude::*;
 use llvm_zluda::*;
 use ptx_parser as ast;
 use std::collections::HashMap;
+use std::env;
 use std::ffi::CString;
 use std::ptr;
 
@@ -29,6 +30,13 @@ pub struct DebugAwarePtxContext {
 
 impl DebugAwarePtxContext {
     pub fn new(debug_enabled: bool) -> Self {
+        // Check for environment variable to completely disable debug info
+        let debug_enabled = if env::var("PTX_DISABLE_DEBUG_INFO").is_ok() {
+            false
+        } else {
+            debug_enabled
+        };
+
         Self {
             dwarf_builder: None,
             source_mappings: Vec::new(),
@@ -47,14 +55,19 @@ impl DebugAwarePtxContext {
         module: LLVMModuleRef,
         source_file: &str,
     ) -> Result<(), String> {
-        if self.debug_enabled {
-            self.dwarf_builder = Some(PtxDwarfBuilder::new(
-                context,
-                module,
-                source_file,
-                "ZLUDA PTX Compiler with Debug Support",
-            )?);
+        // First check if debug is completely disabled
+        if !self.debug_enabled || env::var("PTX_DISABLE_DEBUG_INFO").is_ok() {
+            self.debug_enabled = false;
+            return Ok(());
         }
+
+        self.dwarf_builder = Some(PtxDwarfBuilder::new(
+            context,
+            module,
+            source_file,
+            "ZLUDA PTX Compiler with Debug Support",
+        )?);
+
         Ok(())
     }
 
@@ -67,8 +80,15 @@ impl DebugAwarePtxContext {
         producer: &str,
         optimization_level: u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if !self.debug_enabled {
+        // Check for environment variable to completely disable debug info
+        if !self.debug_enabled || env::var("PTX_DISABLE_DEBUG_INFO").is_ok() {
+            self.debug_enabled = false;
             return Ok(());
+        }
+
+        // Check for null pointers
+        if context.is_null() || module.is_null() {
+            return Err("Context or module is null".into());
         }
 
         // Use the provided filename directly, ensuring it has .ptx extension
@@ -79,15 +99,20 @@ impl DebugAwarePtxContext {
         };
 
         // Create builder with corrected source filename
-        self.dwarf_builder = Some(crate::debug::PtxDwarfBuilder::new(
-            context,
-            module,
-            &self.source_filename,
-            producer,
-        )?);
+        match crate::debug::PtxDwarfBuilder::new(context, module, &self.source_filename, producer) {
+            Ok(builder) => self.dwarf_builder = Some(builder),
+            Err(e) => {
+                eprintln!("Warning: Failed to create debug builder: {}", e);
+                self.debug_enabled = false;
+                return Ok(());
+            }
+        }
 
         // Set critical LLVM module flags for complete debug section generation
-        self.set_llvm_debug_flags(module)?;
+        if let Err(e) = self.set_llvm_debug_flags(module) {
+            eprintln!("Warning: Failed to set LLVM debug flags: {}", e);
+            // Don't fail completely on module flag errors
+        }
 
         Ok(())
     }
@@ -165,7 +190,7 @@ impl DebugAwarePtxContext {
         column: u32,
         instruction_name: &str,
     ) -> Result<(), String> {
-        if !self.debug_enabled || self.dwarf_builder.is_none() {
+        if !self.debug_enabled || self.dwarf_builder.is_none() || builder.is_null() {
             return Ok(());
         }
 
@@ -180,19 +205,25 @@ impl DebugAwarePtxContext {
         if let Some(ref mut dwarf_builder) = self.dwarf_builder {
             // Only create debug locations if we have a valid function scope
             if let Some(function_scope) = self.current_function_debug_info {
-                // Create debug location with valid function scope and adjusted line
-                let debug_loc = dwarf_builder.create_debug_location(
-                    adjusted_line,
-                    column,
-                    Some(function_scope),
-                )?;
+                if !function_scope.is_null() {
+                    // Create debug location with valid function scope and adjusted line
+                    let debug_loc = match dwarf_builder.create_debug_location(
+                        adjusted_line,
+                        column,
+                        Some(function_scope),
+                    ) {
+                        Ok(loc) if !loc.is_null() => loc,
+                        Ok(_) => return Ok(()), // Null location returned, skip setting
+                        Err(e) => return Err(e),
+                    };
 
-                // Set the debug location on the builder - this is crucial for .debug_loc generation
-                LLVMZludaSetCurrentDebugLocation(builder, debug_loc);
-
-                // Increment instruction counter for tracking
-                self.instruction_counter += 1;
+                    // Set the debug location on the builder - this is crucial for .debug_loc generation
+                    LLVMZludaSetCurrentDebugLocation(builder, debug_loc);
+                }
             }
+
+            // Increment instruction counter for tracking
+            self.instruction_counter += 1;
 
             // Store mapping with corrected line information
             self.source_mappings.push(debug::DwarfMappingEntry {

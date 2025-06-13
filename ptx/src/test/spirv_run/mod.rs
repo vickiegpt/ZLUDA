@@ -317,10 +317,11 @@ fn test_cuda_assert<
         "ZLUDA TEST: Running PTX through debug pipeline for test: {}",
         name
     );
-    match crate::ptx_to_llvm_to_ptx_with_sass_mapping(ptx_text) {
-        Ok((llvm_module, reconstructed_ptx, sass_mapping)) => {
+    // Construct the full path to the PTX file for proper debug info
+    let ptx_filename = format!("/root/hetGPU/ptx/src/test/spirv_run/{}.ptx", name);
+    match crate::ptx_to_llvm_with_debug_then_llc_with_filename(ptx_text, &ptx_filename) {
+        Ok(reconstructed_ptx) => {
             eprintln!("ZLUDA TEST: Debug pipeline completed successfully");
-            eprintln!("ZLUDA TEST: Generated {} SASS mappings", sass_mapping.len());
             eprintln!(
                 "ZLUDA TEST: Reconstructed PTX length: {} bytes",
                 reconstructed_ptx.len()
@@ -328,6 +329,7 @@ fn test_cuda_assert<
         }
         Err(e) => {
             eprintln!("ZLUDA TEST: Debug pipeline failed: {:?}", e);
+            return Err(Box::new(DisplayError { err: e }));
         }
     }
 

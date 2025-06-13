@@ -295,10 +295,9 @@ pub fn to_llvm_module_with_debug_round_trip<'input>(
         let llc_output = std::process::Command::new("llc-20")
             .args(&[
                 "-march=nvptx64",
-                "-mcpu=sm_52", // Use newer compute capability for better debug support
-                "-dwarf-version=4", // Use DWARF version 4
-                "-emit-call-site-info", // Emit call site debug information
-                "-debug-entry-values", // Enable debug info for debug entry values
+                "-mcpu=sm_61", // Use newer compute capability for better debug support
+                "-filetype=asm", // Generate assembly (PTX)
+                "-O0", // No optimization to preserve debug info
                 &llvm_temp_path,
                 "-o",
                 &ptx_temp_path,
@@ -426,10 +425,9 @@ pub fn to_llvm_module_with_debug_round_trip_and_filename<'input>(
         let llc_output = std::process::Command::new("llc-20")
             .args(&[
                 "-march=nvptx64",
-                "-mcpu=sm_70", // Use newer compute capability for better debug support
-                "-dwarf-version=4", // Use DWARF version 4
-                "-emit-call-site-info", // Emit call site debug information
-                "-debug-entry-values", // Enable debug info for debug entry values
+                "-mcpu=sm_61", // Use newer compute capability for better debug support
+                "-filetype=asm", // Generate assembly (PTX)
+                "-O0", // No optimization to preserve debug info
                 &llvm_temp_path,
                 "-o",
                 &ptx_temp_path,
