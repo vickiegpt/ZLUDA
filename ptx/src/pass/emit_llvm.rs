@@ -304,6 +304,314 @@ fn declare_debug_intrinsics(context: &Context, module: &Module) -> Result<(), Tr
     Ok(())
 }
 
+// Migration support: Global pause flag for cooperative checkpointing
+static MIGRATION_PAUSE_FLAG_NAME: &str = "__hetgpu_pause_flag";
+static MIGRATION_STATE_BUFFER_NAME: &str = "__hetgpu_state_buffer";
+
+// Helper struct for migration code generation
+struct MigrationSupport {
+    pause_flag: LLVMValueRef,
+    state_buffer: LLVMValueRef,
+    checkpoint_counter: u32,
+}
+
+impl MigrationSupport {
+    fn new(module: LLVMModuleRef, context: LLVMContextRef) -> Self {
+        unsafe {
+            // Create global pause flag in constant memory
+            let i32_type = LLVMInt32TypeInContext(context);
+            let pause_flag_name = CString::new(MIGRATION_PAUSE_FLAG_NAME).unwrap();
+            let mut pause_flag = LLVMGetNamedGlobal(module, pause_flag_name.as_ptr());
+
+            if pause_flag.is_null() {
+                pause_flag = LLVMAddGlobal(module, i32_type, pause_flag_name.as_ptr());
+                LLVMSetInitializer(pause_flag, LLVMConstInt(i32_type, 0, 0));
+                LLVMSetGlobalConstant(pause_flag, 0);
+                LLVMSetLinkage(pause_flag, llvm_zluda::LLVMLinkage::LLVMExternalLinkage);
+                // Put in constant address space for efficient access
+                LLVMSetAlignment(pause_flag, 4);
+            }
+
+            // Create state buffer for register dumps
+            let state_buffer_size = 1024 * 1024; // 1MB per block
+            let i8_type = LLVMInt8TypeInContext(context);
+            let array_type = LLVMArrayType2(i8_type, state_buffer_size);
+            let state_buffer_name = CString::new(MIGRATION_STATE_BUFFER_NAME).unwrap();
+            let mut state_buffer = LLVMGetNamedGlobal(module, state_buffer_name.as_ptr());
+
+            if state_buffer.is_null() {
+                state_buffer = LLVMAddGlobal(module, array_type, state_buffer_name.as_ptr());
+                let zero_array = LLVMConstNull(array_type);
+                LLVMSetInitializer(state_buffer, zero_array);
+                LLVMSetLinkage(state_buffer, llvm_zluda::LLVMLinkage::LLVMExternalLinkage);
+            }
+
+            Self {
+                pause_flag,
+                state_buffer,
+                checkpoint_counter: 0,
+            }
+        }
+    }
+
+    // Generate checkpoint code at barriers
+    fn generate_checkpoint(
+        &mut self,
+        builder: LLVMBuilderRef,
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+        thread_state: &HashMap<SpirvWord, LLVMValueRef>,
+    ) -> Result<(), TranslateError> {
+        unsafe {
+            // Check pause flag
+            let pause_val = LLVMBuildLoad2(
+                builder,
+                LLVMInt32TypeInContext(context),
+                self.pause_flag,
+                c"pause_check".as_ptr(),
+            );
+
+            let zero = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+            let should_pause = LLVMBuildICmp(
+                builder,
+                LLVMIntPredicate::LLVMIntNE,
+                pause_val,
+                zero,
+                c"should_pause".as_ptr(),
+            );
+
+            // Create checkpoint block and resume block
+            let current_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder));
+            let checkpoint_bb =
+                LLVMAppendBasicBlockInContext(context, current_fn, c"checkpoint".as_ptr());
+            let resume_bb = LLVMAppendBasicBlockInContext(context, current_fn, c"resume".as_ptr());
+
+            // Branch based on pause flag
+            LLVMBuildCondBr(builder, should_pause, checkpoint_bb, resume_bb);
+
+            // Checkpoint block: dump state and exit
+            LLVMPositionBuilderAtEnd(builder, checkpoint_bb);
+            self.dump_thread_state(builder, context, module, thread_state)?;
+            LLVMBuildRetVoid(builder);
+
+            // Continue in resume block
+            LLVMPositionBuilderAtEnd(builder, resume_bb);
+
+            self.checkpoint_counter += 1;
+        }
+        Ok(())
+    }
+
+    // Dump thread state to global buffer
+    fn dump_thread_state(
+        &self,
+        builder: LLVMBuilderRef,
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+        thread_state: &HashMap<SpirvWord, LLVMValueRef>,
+    ) -> Result<(), TranslateError> {
+        unsafe {
+            // Get thread and block IDs
+            let tid_x = self.get_thread_id_x(builder, context, module)?;
+            let bid_x = self.get_block_id_x(builder, context, module)?;
+            let block_dim_x = self.get_block_dim_x(builder, context, module)?;
+
+            // Calculate offset in state buffer
+            let i32_type = LLVMInt32TypeInContext(context);
+            let i64_type = LLVMInt64TypeInContext(context);
+
+            // offset = (blockIdx.x * blockDim.x + threadIdx.x) * sizeof(ThreadState)
+            let thread_state_size = 256u64; // Bytes per thread state
+            let thread_global_id = LLVMBuildAdd(
+                builder,
+                LLVMBuildMul(builder, bid_x, block_dim_x, c"".as_ptr()),
+                tid_x,
+                c"global_tid".as_ptr(),
+            );
+
+            let thread_global_id_64 =
+                LLVMBuildZExt(builder, thread_global_id, i64_type, c"".as_ptr());
+            let state_size_64 = LLVMConstInt(i64_type, thread_state_size, 0);
+            let offset = LLVMBuildMul(
+                builder,
+                thread_global_id_64,
+                state_size_64,
+                c"state_offset".as_ptr(),
+            );
+
+            // Get pointer to thread's state location
+            let i8_type = LLVMInt8TypeInContext(context);
+            let state_ptr = LLVMBuildGEP2(
+                builder,
+                i8_type,
+                &mut *self.state_buffer,
+                &mut [offset],
+                1,
+                c"thread_state_ptr".as_ptr(),
+            );
+
+            // Write thread ID and block ID
+            let state_i32_ptr = LLVMBuildBitCast(
+                builder,
+                state_ptr,
+                LLVMPointerType(i32_type, 0),
+                c"state_i32_ptr".as_ptr(),
+            );
+
+            // Layout: [tid.x, tid.y, tid.z, bid.x, bid.y, bid.z, pc, predicate_mask, ...]
+            LLVMBuildStore(builder, tid_x, state_i32_ptr);
+
+            // Save program counter (checkpoint ID for now)
+            let pc_offset = LLVMConstInt(i64_type, 6, 0); // After thread/block IDs
+            let mut pc_offset_array = [pc_offset];
+            let pc_ptr = LLVMBuildGEP2(
+                builder,
+                i32_type,
+                &mut *state_i32_ptr,
+                pc_offset_array.as_mut_ptr(),
+                1,
+                c"pc_ptr".as_ptr(),
+            );
+            let checkpoint_id = LLVMConstInt(i32_type, self.checkpoint_counter as u64, 0);
+            LLVMBuildStore(builder, checkpoint_id, pc_ptr);
+
+            // Save live registers
+            let mut reg_offset = 8u64; // Start after fixed fields
+            for (spirv_id, llvm_val) in thread_state {
+                if !self.is_value_live(llvm_val) {
+                    continue;
+                }
+
+                let reg_offset_val = LLVMConstInt(i64_type, reg_offset, 0);
+                let reg_ptr = LLVMBuildGEP2(
+                    builder,
+                    i32_type,
+                    state_i32_ptr,
+                    &mut [reg_offset_val].as_mut_ptr(),
+                    1,
+                    c"reg_ptr".as_ptr(),
+                );
+
+                // Store register value (assuming 32-bit for now)
+                let val_to_store = if LLVMTypeOf(llvm_val) == i32_type {
+                    llvm_val
+                } else {
+                    // Convert to i32 if needed
+                    LLVMBuildPtrToInt(builder, llvm_val, i32_type, c"".as_ptr())
+                };
+
+                LLVMBuildStore(builder, val_to_store, reg_ptr);
+                reg_offset += 1;
+            }
+
+            // Signal completion by writing marker
+            let done_marker = LLVMConstInt(i32_type, 0xDEADBEEF, 0);
+            let done_offset = LLVMConstInt(i64_type, thread_state_size / 4 - 1, 0);
+            let done_ptr = LLVMBuildGEP2(
+                builder,
+                i32_type,
+                &mut *state_i32_ptr,
+                &mut [done_offset],
+                1,
+                c"done_ptr".as_ptr(),
+            );
+            LLVMBuildStore(builder, done_marker, done_ptr);
+        }
+
+        Ok(())
+    }
+
+    // Helper to get thread ID X
+    fn get_thread_id_x(
+        &self,
+        builder: LLVMBuilderRef,
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+    ) -> Result<LLVMValueRef, TranslateError> {
+        unsafe {
+            let intrinsic_name = c"llvm.nvvm.read.ptx.sreg.tid.x";
+            let i32_type = LLVMInt32TypeInContext(context);
+            let fn_type = LLVMFunctionType(i32_type, ptr::null_mut(), 0, 0);
+
+            let mut intrinsic = LLVMGetNamedFunction(module, intrinsic_name.as_ptr());
+            if intrinsic.is_null() {
+                intrinsic = LLVMAddFunction(module, intrinsic_name.as_ptr(), fn_type);
+            }
+
+            Ok(LLVMBuildCall2(
+                builder,
+                fn_type,
+                intrinsic,
+                ptr::null_mut(),
+                0,
+                c"tid_x".as_ptr(),
+            ))
+        }
+    }
+
+    fn get_block_id_x(
+        &self,
+        builder: LLVMBuilderRef,
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+    ) -> Result<LLVMValueRef, TranslateError> {
+        unsafe {
+            let intrinsic_name = c"llvm.nvvm.read.ptx.sreg.ctaid.x";
+            let i32_type = LLVMInt32TypeInContext(context);
+            let fn_type = LLVMFunctionType(i32_type, ptr::null_mut(), 0, 0);
+
+            let mut intrinsic = LLVMGetNamedFunction(module, intrinsic_name.as_ptr());
+            if intrinsic.is_null() {
+                intrinsic = LLVMAddFunction(module, intrinsic_name.as_ptr(), fn_type);
+            }
+
+            Ok(LLVMBuildCall2(
+                builder,
+                fn_type,
+                intrinsic,
+                ptr::null_mut(),
+                0,
+                c"bid_x".as_ptr(),
+            ))
+        }
+    }
+
+    fn get_block_dim_x(
+        &self,
+        builder: LLVMBuilderRef,
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+    ) -> Result<LLVMValueRef, TranslateError> {
+        unsafe {
+            let intrinsic_name = c"llvm.nvvm.read.ptx.sreg.ntid.x";
+            let i32_type = LLVMInt32TypeInContext(context);
+            let fn_type = LLVMFunctionType(i32_type, ptr::null_mut(), 0, 0);
+
+            let mut intrinsic = LLVMGetNamedFunction(module, intrinsic_name.as_ptr());
+            if intrinsic.is_null() {
+                intrinsic = LLVMAddFunction(module, intrinsic_name.as_ptr(), fn_type);
+            }
+
+            Ok(LLVMBuildCall2(
+                builder,
+                fn_type,
+                intrinsic,
+                ptr::null_mut(),
+                0,
+                c"bdim_x".as_ptr(),
+            ))
+        }
+    }
+
+    fn is_value_live(&self, value: LLVMValueRef) -> bool {
+        // Simple liveness check - in real implementation would do proper analysis
+        unsafe {
+            !value.is_null()
+                && LLVMGetValueKind(value) != llvm_zluda::LLVMValueKind::LLVMUndefValueValueKind
+        }
+    }
+}
+
 pub(super) fn run<'input>(
     id_defs: GlobalStringIdentResolver2<'input>,
     directives: Vec<Directive2<'input, ast::Instruction<SpirvWord>, SpirvWord>>,
@@ -318,7 +626,18 @@ pub(super) fn run_with_filename<'input>(
 ) -> Result<MemoryBuffer, TranslateError> {
     let context = Context::new();
     let module = Module::new(&context, c"zluda_kernel");
+
+    // Initialize migration support if enabled
+    let enable_migration = std::env::var("HETGPU_ENABLE_MIGRATION").is_ok();
+    let migration_support = if enable_migration {
+        Some(MigrationSupport::new(module.get(), context.get()))
+    } else {
+        None
+    };
+
     let mut emit_ctx = ModuleEmitContext::new(&context, &module, &id_defs);
+    emit_ctx.migration_support = migration_support;
+
     let mut kernel_entries = Vec::new();
 
     // Check if debug info is disabled via environment variable
@@ -391,6 +710,7 @@ struct ModuleEmitContext<'a, 'input> {
     debug_context: DebugContext,
     current_line: u32,
     current_function_di: Option<LLVMMetadataRef>,
+    migration_support: Option<MigrationSupport>,
 }
 
 impl<'a, 'input> ModuleEmitContext<'a, 'input> {
@@ -423,6 +743,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             debug_context: DebugContext::new(),
             current_line: 1,
             current_function_di: None,
+            migration_support: None,
         };
 
         // Debug information initialization is temporarily disabled

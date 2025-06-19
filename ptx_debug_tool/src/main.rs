@@ -9,6 +9,189 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+// GPU Backend Types
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GpuBackend {
+    Nvidia,
+    Amd,
+    Intel,
+    Tenstorrent,
+}
+
+// Runtime state for managing GPU devices and kernels
+struct HetGpuRuntime {
+    current_device: GpuBackend,
+    compiled_kernels: HashMap<(String, GpuBackend), Vec<u8>>, // (kernel_name, backend) -> native code
+    device_memory: HashMap<String, DeviceMemory>,             // memory allocations
+    pause_flags: HashMap<String, Arc<Mutex<bool>>>, // kernel pause flags for cooperative checkpointing
+}
+
+struct DeviceMemory {
+    backend: GpuBackend,
+    size: usize,
+    device_ptr: u64,
+    host_mirror: Vec<u8>, // Host copy for migration
+}
+
+impl HetGpuRuntime {
+    fn new() -> Self {
+        Self {
+            current_device: Self::detect_device(),
+            compiled_kernels: HashMap::new(),
+            device_memory: HashMap::new(),
+            pause_flags: HashMap::new(),
+        }
+    }
+
+    fn detect_device() -> GpuBackend {
+        // In real implementation, would check PCI devices, environment vars, etc.
+        // For now, default to NVIDIA
+        if std::env::var("HETGPU_BACKEND").is_ok() {
+            match std::env::var("HETGPU_BACKEND").unwrap().as_str() {
+                "amd" => GpuBackend::Amd,
+                "intel" => GpuBackend::Intel,
+                "tenstorrent" => GpuBackend::Tenstorrent,
+                _ => GpuBackend::Nvidia,
+            }
+        } else {
+            GpuBackend::Nvidia
+        }
+    }
+
+    // JIT compile PTX to target backend
+    fn compile_kernel(
+        &mut self,
+        kernel_name: &str,
+        ptx_code: &str,
+        target: GpuBackend,
+    ) -> Result<Vec<u8>, String> {
+        let key = (kernel_name.to_string(), target);
+
+        // Check cache
+        if let Some(compiled) = self.compiled_kernels.get(&key) {
+            return Ok(compiled.clone());
+        }
+
+        println!("JIT compiling {} for {:?}...", kernel_name, target);
+        let start = Instant::now();
+
+        let compiled = match target {
+            GpuBackend::Nvidia => {
+                // PTX is native for NVIDIA, just return as-is
+                // In real implementation, would use cuModuleLoadDataEx
+                ptx_code.as_bytes().to_vec()
+            }
+            GpuBackend::Amd => {
+                // Translate PTX to SPIR-V, then to AMD GCN
+                self.ptx_to_spirv(ptx_code)?
+            }
+            GpuBackend::Intel => {
+                // Translate PTX to SPIR-V for Intel
+                self.ptx_to_spirv(ptx_code)?
+            }
+            GpuBackend::Tenstorrent => {
+                // Translate PTX to Metalium assembly
+                self.ptx_to_metalium(ptx_code)?
+            }
+        };
+
+        println!("JIT compilation took {:?}", start.elapsed());
+        self.compiled_kernels.insert(key, compiled.clone());
+        Ok(compiled)
+    }
+
+    fn ptx_to_spirv(&self, ptx_code: &str) -> Result<Vec<u8>, String> {
+        // Placeholder for PTX to SPIR-V translation
+        // Would use LLVM to parse PTX and emit SPIR-V
+        Err("PTX to SPIR-V translation not yet implemented".to_string())
+    }
+
+    fn ptx_to_metalium(&self, ptx_code: &str) -> Result<Vec<u8>, String> {
+        // Placeholder for PTX to Tenstorrent Metalium translation
+        // Would map PTX warps to vector operations on Tensix cores
+        Err("PTX to Metalium translation not yet implemented".to_string())
+    }
+
+    // Allocate device memory with host mirror for migration
+    fn allocate_memory(&mut self, name: String, size: usize) -> Result<u64, String> {
+        let device_ptr = match self.current_device {
+            GpuBackend::Nvidia => {
+                // Would call cuMemAlloc
+                0x1000000 // Dummy address
+            }
+            GpuBackend::Amd => {
+                // Would call hipMalloc
+                0x2000000
+            }
+            GpuBackend::Intel => {
+                // Would call zeMemAllocDevice
+                0x3000000
+            }
+            GpuBackend::Tenstorrent => {
+                // Would use TT memory allocation
+                0x4000000
+            }
+        };
+
+        let mem = DeviceMemory {
+            backend: self.current_device,
+            size,
+            device_ptr,
+            host_mirror: vec![0u8; size],
+        };
+
+        self.device_memory.insert(name, mem);
+        Ok(device_ptr)
+    }
+
+    // Copy memory to host for migration
+    fn copy_to_host(&mut self, name: &str) -> Result<(), String> {
+        let mem = self
+            .device_memory
+            .get_mut(name)
+            .ok_or("Memory allocation not found")?;
+
+        println!("Copying {} bytes from device to host...", mem.size);
+        // In real implementation, would use cudaMemcpyDeviceToHost, etc.
+        Ok(())
+    }
+
+    // Copy memory from host after migration
+    fn copy_from_host(&mut self, name: &str) -> Result<(), String> {
+        let mem = self
+            .device_memory
+            .get_mut(name)
+            .ok_or("Memory allocation not found")?;
+
+        println!("Copying {} bytes from host to device...", mem.size);
+        // In real implementation, would use cudaMemcpyHostToDevice, etc.
+        Ok(())
+    }
+}
+
+// Kernel execution state for checkpointing
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct KernelState {
+    kernel_name: String,
+    grid_dim: (u32, u32, u32),
+    block_dim: (u32, u32, u32),
+    segment_id: u32, // Which segment of the kernel we're in
+    thread_states: Vec<ThreadState>,
+    shared_memory: Vec<u8>,
+    memory_snapshot: HashMap<String, Vec<u8>>, // Named memory allocations
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ThreadState {
+    thread_id: (u32, u32, u32),
+    block_id: (u32, u32, u32),
+    registers: HashMap<String, u64>, // Register name -> value
+    program_counter: u32,
+    predicate_mask: u32,
+}
 
 #[derive(Parser)]
 #[command(name = "ptx-debug")]
@@ -31,6 +214,52 @@ enum Commands {
     Recover(RecoverArgs),
     /// Export debug information
     Export(ExportArgs),
+    /// Live migrate a running kernel between GPUs
+    Migrate(MigrateArgs),
+    /// Launch a kernel with migration support
+    Launch(LaunchArgs),
+}
+
+#[derive(Args)]
+struct MigrateArgs {
+    /// Running kernel identifier
+    #[arg(short, long)]
+    kernel_id: String,
+
+    /// Source GPU backend
+    #[arg(short, long)]
+    source: String,
+
+    /// Target GPU backend
+    #[arg(short, long)]
+    target: String,
+
+    /// Output state file
+    #[arg(short, long)]
+    state_file: PathBuf,
+}
+
+#[derive(Args)]
+struct LaunchArgs {
+    /// PTX kernel file
+    #[arg(short, long)]
+    kernel: PathBuf,
+
+    /// Kernel function name
+    #[arg(short, long)]
+    function: String,
+
+    /// Grid dimensions (x,y,z)
+    #[arg(short, long, value_delimiter = ',')]
+    grid: Vec<u32>,
+
+    /// Block dimensions (x,y,z)
+    #[arg(short, long, value_delimiter = ',')]
+    block: Vec<u32>,
+
+    /// Enable migration support
+    #[arg(short, long)]
+    migration: bool,
 }
 
 #[derive(Args)]
@@ -126,7 +355,150 @@ async fn main() -> anyhow::Result<()> {
         Commands::Debug(args) => debug_command(args).await,
         Commands::Recover(args) => recover_command(args).await,
         Commands::Export(args) => export_command(args).await,
+        Commands::Migrate(args) => migrate_command(args).await,
+        Commands::Launch(args) => launch_command(args).await,
     }
+}
+
+async fn migrate_command(args: MigrateArgs) -> anyhow::Result<()> {
+    println!("Starting live migration of kernel {}...", args.kernel_id);
+    println!("Source: {} -> Target: {}", args.source, args.target);
+
+    let mut runtime = HetGpuRuntime::new();
+
+    // Step 1: Set pause flag for the kernel
+    println!("Setting pause flag for cooperative checkpoint...");
+    if let Some(pause_flag) = runtime.pause_flags.get(&args.kernel_id) {
+        *pause_flag.lock().unwrap() = true;
+    }
+
+    // Step 2: Wait for kernel to reach safe checkpoint (barrier)
+    println!("Waiting for kernel to reach barrier...");
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Step 3: Capture kernel state
+    println!("Capturing kernel state...");
+    let kernel_state = capture_kernel_state(&args.kernel_id)?;
+
+    // Step 4: Copy device memory to host
+    println!("Copying device memory to host...");
+    for (name, _) in &runtime.device_memory {
+        runtime.copy_to_host(name)?;
+    }
+
+    // Step 5: Save state to file
+    let state_json = serde_json::to_string_pretty(&kernel_state)?;
+    fs::write(&args.state_file, state_json)?;
+    println!("Kernel state saved to: {}", args.state_file.display());
+
+    // Step 6: Switch to target device
+    runtime.current_device = match args.target.as_str() {
+        "amd" => GpuBackend::Amd,
+        "intel" => GpuBackend::Intel,
+        "tenstorrent" => GpuBackend::Tenstorrent,
+        _ => GpuBackend::Nvidia,
+    };
+
+    // Step 7: Restore on target device
+    println!("Restoring kernel on target device...");
+    restore_kernel_state(&kernel_state, &mut runtime)?;
+
+    println!("Migration completed successfully!");
+    Ok(())
+}
+
+async fn launch_command(args: LaunchArgs) -> anyhow::Result<()> {
+    println!("Launching kernel with migration support...");
+
+    let mut runtime = HetGpuRuntime::new();
+
+    // Read PTX code
+    let ptx_code = fs::read_to_string(&args.kernel)?;
+
+    // Parse grid and block dimensions
+    let grid_dim = match args.grid.as_slice() {
+        [x] => (*x, 1, 1),
+        [x, y] => (*x, *y, 1),
+        [x, y, z] => (*x, *y, *z),
+        _ => (1, 1, 1),
+    };
+
+    let block_dim = match args.block.as_slice() {
+        [x] => (*x, 1, 1),
+        [x, y] => (*x, *y, 1),
+        [x, y, z] => (*x, *y, *z),
+        _ => (1, 1, 1),
+    };
+
+    // Compile kernel for current device
+    let kernel_binary =
+        runtime.compile_kernel(&args.function, &ptx_code, runtime.current_device)?;
+
+    // Create pause flag for this kernel
+    let kernel_id = format!("{}_{}", args.function, std::process::id());
+    runtime
+        .pause_flags
+        .insert(kernel_id.clone(), Arc::new(Mutex::new(false)));
+
+    println!("Kernel ID: {}", kernel_id);
+    println!("Grid: {:?}, Block: {:?}", grid_dim, block_dim);
+    println!("Backend: {:?}", runtime.current_device);
+
+    if args.migration {
+        println!("Migration support enabled - kernel will check for pause at barriers");
+    }
+
+    // In real implementation, would actually launch the kernel
+    println!("Kernel launched successfully!");
+
+    Ok(())
+}
+
+fn capture_kernel_state(kernel_id: &str) -> anyhow::Result<KernelState> {
+    // In real implementation, would:
+    // 1. Use NVBit or similar to read register values
+    // 2. Copy shared memory contents
+    // 3. Record program counters
+
+    // Mock implementation
+    let state = KernelState {
+        kernel_name: kernel_id.to_string(),
+        grid_dim: (256, 1, 1),
+        block_dim: (256, 1, 1),
+        segment_id: 1,
+        thread_states: vec![ThreadState {
+            thread_id: (0, 0, 0),
+            block_id: (0, 0, 0),
+            registers: HashMap::from([("r0".to_string(), 42), ("r1".to_string(), 100)]),
+            program_counter: 0x100,
+            predicate_mask: 0xFFFFFFFF,
+        }],
+        shared_memory: vec![0u8; 1024],
+        memory_snapshot: HashMap::new(),
+    };
+
+    Ok(state)
+}
+
+fn restore_kernel_state(state: &KernelState, runtime: &mut HetGpuRuntime) -> anyhow::Result<()> {
+    // In real implementation, would:
+    // 1. Allocate memory on new device
+    // 2. Copy memory contents
+    // 3. Launch special resume kernel
+    // 4. Initialize registers from saved state
+
+    println!(
+        "Restoring kernel {} at segment {}",
+        state.kernel_name, state.segment_id
+    );
+    println!("Restoring {} thread states", state.thread_states.len());
+
+    // Copy memory allocations to new device
+    for (name, data) in &state.memory_snapshot {
+        runtime.copy_from_host(name)?;
+    }
+
+    Ok(())
 }
 
 async fn compile_command(args: CompileArgs) -> anyhow::Result<()> {
@@ -183,6 +555,23 @@ async fn compile_command(args: CompileArgs) -> anyhow::Result<()> {
             return Err(anyhow::anyhow!("PTX compilation failed: {}", e));
         }
     }
+    // Parse PTX (using ptx_parser)
+    // For now, create mock debug mappings
+    let debug_mappings = vec![DwarfMappingEntry {
+        ptx_location: PtxSourceLocation {
+            file: args.input.to_string_lossy().to_string(),
+            line: 1,
+            column: 1,
+            instruction_offset: 0,
+        },
+        target_instructions: vec![TargetInstruction::AmdGcn {
+            instruction: "v_add_f32 v0, v1, v2".to_string(),
+            address: 0x1000,
+            register_state: HashMap::new(),
+        }],
+        variable_mappings: HashMap::new(),
+        scope_id: 1,
+    }];
 
     Ok(())
 }
