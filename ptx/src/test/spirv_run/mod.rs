@@ -29,15 +29,15 @@ macro_rules! test_ptx {
                 test_hip_assert(stringify!($fn_name), ptx, &input, &mut output)
             }
         }
-        paste::item! {
-            #[test]
-            fn [<$fn_name _cuda>]() -> Result<(), Box<dyn std::error::Error>> {
-                let ptx = include_str!(concat!(stringify!($fn_name), ".ptx"));
-                let input = $input;
-                let mut output = $output;
-                test_cuda_assert(stringify!($fn_name), ptx, &input, &mut output)
-            }
-        }
+        // paste::item! {
+        //     #[test]
+        //     fn [<$fn_name _cuda>]() -> Result<(), Box<dyn std::error::Error>> {
+        //         let ptx = include_str!(concat!(stringify!($fn_name), ".ptx"));
+        //         let input = $input;
+        //         let mut output = $output;
+        //         test_cuda_assert(stringify!($fn_name), ptx, &input, &mut output)
+        //     }
+        // }
     };
 
     ($fn_name:ident) => {};

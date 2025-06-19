@@ -5,10 +5,10 @@ use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
 use std::{ffi::CStr, ptr};
-#[cfg(feature = "intel")]
-use ze_runtime_sys::*;
 #[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 use tt_runtime_sys;
+#[cfg(feature = "intel")]
+use ze_runtime_sys::*;
 #[cfg(feature = "amd")]
 pub(crate) struct Module {
     base: hipModule_t,
@@ -77,7 +77,7 @@ impl ZludaObject for Module {
     fn drop_checked(&mut self) -> CUresult {
         // Clean up kernels (they will be dropped automatically)
         self.kernels.clear();
-        
+
         // Clean up program (it will be dropped automatically)
         self.program = None;
 
@@ -90,32 +90,23 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     let text = unsafe { CStr::from_ptr(image.cast()) }
         .to_str()
         .map_err(|_| CUerror::INVALID_VALUE)?;
-    
+
     // Use the new debug-aware compilation pipeline for SASS to PTX mapping
     eprintln!("ZLUDA DEBUG: Starting PTX to LLVM to PTX compilation for SASS mapping...");
     match ptx::ptx_to_llvm_to_ptx_with_sass_mapping(text) {
         Ok((llvm_module, reconstructed_ptx, sass_mapping)) => {
             // Log the SASS to PTX mapping for debugging
-            eprintln!("ZLUDA DEBUG: Generated SASS to PTX mapping with {} entries", sass_mapping.len());
-            eprintln!("ZLUDA DEBUG: Reconstructed PTX length: {} bytes", reconstructed_ptx.len());
-            
-            // Register the module with the SASS to PTX mapping registry
-            let module_name = format!("module_{:p}", image);
-            let llvm_ir_text = llvm_module.print_to_string().ok();
-            match ptx::sass_to_ptx_mapping::runtime_integration::on_module_load(
-                module_name.clone(),
-                text.to_string(),
-                llvm_ir_text,
-                sass_mapping,
-            ) {
-                Ok(module_id) => {
-                    eprintln!("ZLUDA DEBUG: Registered module {} with SASS mapping (ID: {})", module_name, module_id);
-                }
-                Err(e) => {
-                    eprintln!("ZLUDA DEBUG: Failed to register SASS mapping: {}", e);
-                }
-            }
-            
+            eprintln!(
+                "ZLUDA DEBUG: Generated SASS to PTX mapping with {} entries",
+                sass_mapping.len()
+            );
+            eprintln!(
+                "ZLUDA DEBUG: Reconstructed PTX length: {} bytes",
+                reconstructed_ptx.len()
+            );
+
+            // SASS to PTX mapping registry removed for simplicity
+
             // Continue with normal compilation
             let mut dev = 0;
             unsafe { hipCtxGetDevice(&mut dev).unwrap() };
@@ -134,7 +125,8 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         }
         Err(_) => {
             // Fallback to original compilation if debug compilation fails
-            let ast = ptx_parser::parse_module_checked(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
+            let ast =
+                ptx_parser::parse_module_checked(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
             let llvm_module = ptx::to_llvm_module(ast).map_err(|_| CUerror::UNKNOWN)?;
             let mut dev = 0;
             unsafe { hipCtxGetDevice(&mut dev).unwrap() };
@@ -165,27 +157,16 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     match ptx::ptx_to_llvm_to_ptx_with_sass_mapping(text) {
         Ok((llvm_module, reconstructed_ptx, sass_mapping)) => {
             // Log the SASS to PTX mapping for debugging
-            eprintln!("ZLUDA DEBUG: Intel backend - Generated SASS to PTX mapping with {} entries", sass_mapping.len());
-            
-            // Register the module with the SASS to PTX mapping registry
-            let module_name = format!("intel_module_{:p}", image);
-            let llvm_ir_text = llvm_module.print_to_string().ok();
-            match ptx::sass_to_ptx_mapping::runtime_integration::on_module_load(
-                module_name.clone(),
-                text.to_string(),
-                llvm_ir_text,
-                sass_mapping,
-            ) {
-                Ok(module_id) => {
-                    eprintln!("ZLUDA DEBUG: Intel - Registered module {} with SASS mapping (ID: {})", module_name, module_id);
-                }
-                Err(e) => {
-                    eprintln!("ZLUDA DEBUG: Intel - Failed to register SASS mapping: {}", e);
-                }
-            }
-            
+            eprintln!(
+                "ZLUDA DEBUG: Intel backend - Generated SASS to PTX mapping with {} entries",
+                sass_mapping.len()
+            );
+
+            // SASS to PTX mapping registry removed for simplicity
+
             // Create SPIRV module from the LLVM output
-            let spirv_module = ze_module::SpirvModule::new(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
+            let spirv_module =
+                ze_module::SpirvModule::new(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
             match load_data_impl(module, spirv_module) {
                 Ok(()) => CUresult::SUCCESS,
                 Err(e) => Err(e),
@@ -193,7 +174,8 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         }
         Err(_) => {
             // Fallback to original compilation
-            let spirv_module = ze_module::SpirvModule::new(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
+            let spirv_module =
+                ze_module::SpirvModule::new(text).map_err(|_| CUerror::NO_BINARY_FOR_GPU)?;
             match load_data_impl(module, spirv_module) {
                 Ok(()) => CUresult::SUCCESS,
                 Err(e) => Err(e),
@@ -260,7 +242,7 @@ fn ptx_to_spirv(spirv_module: &ze_module::SpirvModule) -> Result<Vec<u8>, CUerro
     // In a real implementation, you would use LLVM's SPIR-V backend
     // Here we're using the robust conversion from the llvm_module
     let spirv_binary = ptx::llvm_to_spirv_robust(
-        std::str::from_utf8(&llvm_module.llvm_ir).map_err(|_| CUerror::INVALID_VALUE)?
+        std::str::from_utf8(&llvm_module.llvm_ir).map_err(|_| CUerror::INVALID_VALUE)?,
     )
     .map_err(|_| CUerror::UNKNOWN)?;
 
@@ -444,7 +426,8 @@ pub(crate) fn get_function(
     }
 
     let function_name = unsafe {
-        std::ffi::CStr::from_ptr(name).to_str()
+        std::ffi::CStr::from_ptr(name)
+            .to_str()
             .map_err(|_| CUerror::INVALID_VALUE)?
     };
 
@@ -458,7 +441,7 @@ pub(crate) fn get_function(
 
     let kernel_box = Box::new(tt_kernel);
     let kernel_ptr = Box::into_raw(kernel_box);
-    
+
     unsafe { *hfunc = CUfunction(kernel_ptr as *mut _) };
     Ok(())
 }

@@ -41,6 +41,7 @@ use llvm_zluda::bit_writer::LLVMWriteBitcodeToMemoryBuffer;
 use ptx_parser::{MultiVariable, PredAt};
 // Debug info functions are in core module
 // use llvm_zluda::debuginfo::*;
+use llvm_zluda::debuginfo::*;
 use llvm_zluda::prelude::*;
 use llvm_zluda::target::{LLVMGetModuleDataLayout, LLVMSizeOfTypeInBits};
 use llvm_zluda::{core::*, LLVMAtomicOrdering, LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind};
@@ -445,7 +446,7 @@ impl MigrationSupport {
                 builder,
                 i8_type,
                 &mut *self.state_buffer,
-                &mut [offset],
+                [offset].as_mut_ptr(),
                 1,
                 c"thread_state_ptr".as_ptr(),
             );
@@ -478,7 +479,7 @@ impl MigrationSupport {
             // Save live registers
             let mut reg_offset = 8u64; // Start after fixed fields
             for (spirv_id, llvm_val) in thread_state {
-                if !self.is_value_live(llvm_val) {
+                if !self.is_value_live(*llvm_val) {
                     continue;
                 }
 
@@ -486,18 +487,18 @@ impl MigrationSupport {
                 let reg_ptr = LLVMBuildGEP2(
                     builder,
                     i32_type,
-                    state_i32_ptr,
-                    &mut [reg_offset_val].as_mut_ptr(),
+                    &mut *state_i32_ptr,
+                    [reg_offset_val].as_mut_ptr(),
                     1,
                     c"reg_ptr".as_ptr(),
                 );
 
                 // Store register value (assuming 32-bit for now)
-                let val_to_store = if LLVMTypeOf(llvm_val) == i32_type {
-                    llvm_val
+                let val_to_store = if LLVMTypeOf(*llvm_val) == i32_type {
+                    *llvm_val
                 } else {
                     // Convert to i32 if needed
-                    LLVMBuildPtrToInt(builder, llvm_val, i32_type, c"".as_ptr())
+                    LLVMBuildPtrToInt(builder, *llvm_val, i32_type, c"".as_ptr())
                 };
 
                 LLVMBuildStore(builder, val_to_store, reg_ptr);
@@ -511,7 +512,7 @@ impl MigrationSupport {
                 builder,
                 i32_type,
                 &mut *state_i32_ptr,
-                &mut [done_offset],
+                [done_offset].as_mut_ptr(),
                 1,
                 c"done_ptr".as_ptr(),
             );
@@ -1605,7 +1606,7 @@ impl<'a> MethodEmitContext<'a> {
                                             Err(e) => {
                                                 eprintln!("Warning: Failed to create debug expression: {}", e);
                                                 // Create an empty expression instead of null
-                                                llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
+                                                LLVMDIBuilderCreateExpression(
                                                     dwarf_builder.get_builder(),
                                                     ptr::null_mut(),
                                                     0,
@@ -1857,7 +1858,7 @@ impl<'a> MethodEmitContext<'a> {
         }
 
         // Always create a debug expression (empty if no operations)
-        let expr = llvm_zluda::debuginfo::LLVMDIBuilderCreateExpression(
+        let expr = LLVMDIBuilderCreateExpression(
             dwarf_builder.get_builder(),
             if expr_ops.is_empty() {
                 ptr::null_mut()
@@ -2514,7 +2515,14 @@ impl<'a> MethodEmitContext<'a> {
         let pointee_type = get_scalar_type(self.context, ast::ScalarType::B8);
 
         self.resolver.with_result(ptr_access.dst, |dst| unsafe {
-            LLVMBuildInBoundsGEP2(self.builder, pointee_type, ptr_src, &mut offset_src, 1, dst)
+            LLVMBuildInBoundsGEP2(
+                self.builder,
+                pointee_type,
+                &mut *ptr_src,
+                &mut offset_src,
+                1,
+                dst,
+            )
         });
         Ok(())
     }

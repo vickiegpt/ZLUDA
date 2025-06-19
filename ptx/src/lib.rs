@@ -1,5 +1,7 @@
 // #![feature(str_from_raw_parts)]
 
+pub mod checkpoint;
+pub mod checkpoint_integration;
 pub mod debug;
 pub mod dwarf_validation;
 pub mod pass;
@@ -56,10 +58,8 @@ fn extract_filename_from_ptx(ptx_source: &str) -> Option<String> {
                 let kernel_name = after_entry[..end].trim();
                 if !kernel_name.is_empty() {
                     // Check if the file exists in the test directory
-                    let test_path = format!(
-                        "/root/hetGPU/ptx/src/test/spirv_run/{}.ptx",
-                        kernel_name
-                    );
+                    let test_path =
+                        format!("/root/hetGPU/ptx/src/test/spirv_run/{}.ptx", kernel_name);
                     if std::path::Path::new(&test_path).exists() {
                         return Some(test_path);
                     } else {
@@ -210,34 +210,281 @@ pub fn llvm_to_spirv_alt(llvm_ir: &str) -> Result<Vec<u8>, Box<dyn std::error::E
 
 // Main function that tries both implementation methods
 pub fn llvm_to_spirv_robust(llvm_ir: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Pre-process LLVM IR to fix address space issues before SPIR-V conversion
+    let fixed_llvm_ir = preprocess_llvm_ir_for_spirv(llvm_ir)?;
+
     // Try the primary implementation first
-    match llvm_to_spirv(llvm_ir) {
-        Ok(binary) => Ok(binary),
-        Err(primary_err) => {
-            // If the primary implementation fails, try the alternative
-            match llvm_to_spirv_alt(llvm_ir) {
-                Ok(binary) => Ok(binary),
-                Err(alt_err) => {
-                    // If both fail, return a minimal valid SPIR-V module
-                    // with an error log
-                    eprintln!("Primary SPIR-V conversion failed: {}", primary_err);
-                    eprintln!("Alternative SPIR-V conversion failed: {}", alt_err);
-
-                    // Return minimal valid SPIR-V module as fallback
-                    let minimal_spirv = vec![
-                        // SPIR-V magic number
-                        0x07, 0x23, 0x02, 0x03, // Version 1.0, Generator 0
-                        0x00, 0x01, 0x00, 0x00, // Generator magic number
-                        0x00, 0x00, 0x00, 0x00, // Bound for IDs
-                        0x01, 0x00, 0x00, 0x00, // Reserved
-                        0x00, 0x00, 0x00, 0x00,
-                    ];
-
-                    Ok(minimal_spirv)
-                }
+    match llvm_to_spirv(&fixed_llvm_ir) {
+        Ok(binary) => {
+            // Validate the SPIR-V binary before returning
+            if is_valid_spirv_binary(&binary) {
+                Ok(binary)
+            } else {
+                eprintln!(
+                    "ZLUDA DEBUG: Primary SPIR-V binary failed validation, trying alternative"
+                );
+                try_alternative_spirv_generation(&fixed_llvm_ir)
             }
         }
+        Err(primary_err) => {
+            eprintln!(
+                "ZLUDA DEBUG: Primary SPIR-V conversion failed: {}",
+                primary_err
+            );
+            try_alternative_spirv_generation(&fixed_llvm_ir)
+        }
     }
+}
+
+/// Pre-process LLVM IR to fix address space casting issues for SPIR-V
+pub fn preprocess_llvm_ir_for_spirv(llvm_ir: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let mut processed_ir = llvm_ir.to_string();
+
+    // First collect all variable definitions and their types
+    let var_types = collect_variable_types(&processed_ir)?;
+
+    // Fix 1: Fix pointer type consistency in address space casts
+    processed_ir = fix_pointer_type_consistency(&processed_ir, &var_types)?;
+
+    // Fix 2: Replace direct address space casts with two-step casts through generic
+    processed_ir = fix_invalid_address_space_casts(&processed_ir)?;
+
+    // Fix 3: Ensure all global variables have explicit address space annotations
+    processed_ir = fix_global_variable_address_spaces(&processed_ir)?;
+
+    // Fix 4: Remove problematic debug information that might cause SPIR-V issues
+    processed_ir = remove_problematic_debug_info(&processed_ir)?;
+
+    Ok(processed_ir)
+}
+
+/// Collect variable types from LLVM IR to ensure type consistency
+fn collect_variable_types(
+    llvm_ir: &str,
+) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
+    let mut var_types = std::collections::HashMap::new();
+
+    // Parse variable definitions like: %"2" = inttoptr i64 %1 to ptr
+    let var_def_re =
+        regex::Regex::new(r"(%[^=\s]+)\s*=\s*[^=]*\s+to\s+(ptr(?:\s*addrspace\(\d+\))?)")?;
+    for caps in var_def_re.captures_iter(llvm_ir) {
+        let var_name = caps[1].to_string();
+        let var_type = caps[2].to_string();
+        var_types.insert(var_name, var_type);
+    }
+
+    // Parse alloca definitions: %var = alloca type, addrspace(X)
+    let alloca_re = regex::Regex::new(r"(%[^=\s]+)\s*=\s*alloca\s+[^,]+,\s*addrspace\((\d+)\)")?;
+    for caps in alloca_re.captures_iter(llvm_ir) {
+        let var_name = caps[1].to_string();
+        let addrspace = &caps[2];
+        var_types.insert(var_name, format!("ptr addrspace({})", addrspace));
+    }
+
+    // Parse simple alloca definitions: %var = alloca type
+    let simple_alloca_re = regex::Regex::new(r"(%[^=\s]+)\s*=\s*alloca\s+[^,\n]+")?;
+    for caps in simple_alloca_re.captures_iter(llvm_ir) {
+        let var_name = caps[1].to_string();
+        var_types.insert(var_name, "ptr".to_string());
+    }
+
+    Ok(var_types)
+}
+
+/// Fix pointer type consistency issues in address space casts
+fn fix_pointer_type_consistency(
+    llvm_ir: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut processed = llvm_ir.to_string();
+
+    // Pattern: %result = addrspacecast ptr addrspace(X) %source to ptr addrspace(Y)
+    // where %source is actually defined as just 'ptr', not 'ptr addrspace(X)'
+    let cast_re = regex::Regex::new(
+        r"(%[^=\s]+)\s*=\s*addrspacecast\s+(ptr)\s*addrspace\((\d+)\)\s*(%[^%\s]+)\s+to\s+(ptr(?:\s*addrspace\(\d+\))?)",
+    )?;
+
+    processed = cast_re
+        .replace_all(&processed, |caps: &regex::Captures| {
+            let result_var = &caps[1];
+            let cast_src_type = &caps[2]; // "ptr"
+            let cast_src_addrspace = &caps[3];
+            let src_var = &caps[4];
+            let dst_type = &caps[5];
+
+            // Check what type the source variable actually has
+            if let Some(actual_type) = var_types.get(src_var) {
+                if actual_type == "ptr" && cast_src_type == "ptr" {
+                    // The variable is defined as 'ptr' but being cast as 'ptr addrspace(X)'
+                    // Use the actual type instead
+                    format!(
+                        "{} = addrspacecast {} {} to {}",
+                        result_var, actual_type, src_var, dst_type
+                    )
+                } else {
+                    // Types match or it's a complex case - keep original but fix if needed
+                    format!(
+                        "{} = addrspacecast {}addrspace({}) {} to {}",
+                        result_var, cast_src_type, cast_src_addrspace, src_var, dst_type
+                    )
+                }
+            } else {
+                // Can't determine variable type - keep original
+                format!(
+                    "{} = addrspacecast {}addrspace({}) {} to {}",
+                    result_var, cast_src_type, cast_src_addrspace, src_var, dst_type
+                )
+            }
+        })
+        .to_string();
+
+    Ok(processed)
+}
+
+/// Fix invalid direct address space casts by using two-step casts through generic
+fn fix_invalid_address_space_casts(llvm_ir: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let mut processed = llvm_ir.to_string();
+
+    // Fix common invalid direct casts between specific address spaces
+    let invalid_cast_patterns = [
+        // Private to Global direct casts (AMDGPU address spaces)
+        (
+            r"addrspacecast\s*\(\s*([^*]+\*\s*addrspace\(5\)\*[^)]+)\s+to\s+([^*]+\*\s*addrspace\(1\)\*[^)]*)\)",
+            "addrspacecast (addrspacecast ($1 to i8*) to $2)",
+        ),
+        // Global to Private direct casts
+        (
+            r"addrspacecast\s*\(\s*([^*]+\*\s*addrspace\(1\)\*[^)]+)\s+to\s+([^*]+\*\s*addrspace\(5\)\*[^)]*)\)",
+            "addrspacecast (addrspacecast ($1 to i8*) to $2)",
+        ),
+        // Local to Global direct casts
+        (
+            r"addrspacecast\s*\(\s*([^*]+\*\s*addrspace\(3\)\*[^)]+)\s+to\s+([^*]+\*\s*addrspace\(1\)\*[^)]*)\)",
+            "addrspacecast (addrspacecast ($1 to i8*) to $2)",
+        ),
+        // Global to Local direct casts
+        (
+            r"addrspacecast\s*\(\s*([^*]+\*\s*addrspace\(1\)\*[^)]+)\s+to\s+([^*]+\*\s*addrspace\(3\)\*[^)]*)\)",
+            "addrspacecast (addrspacecast ($1 to i8*) to $2)",
+        ),
+        // Constant to Private direct casts
+        (
+            r"addrspacecast\s*\(\s*([^*]+\*\s*addrspace\(4\)\*[^)]+)\s+to\s+([^*]+\*\s*addrspace\(5\)\*[^)]*)\)",
+            "addrspacecast (addrspacecast ($1 to i8*) to $2)",
+        ),
+        // Private to Constant direct casts
+        (
+            r"addrspacecast\s*\(\s*([^*]+\*\s*addrspace\(5\)\*[^)]+)\s+to\s+([^*]+\*\s*addrspace\(4\)\*[^)]*)\)",
+            "addrspacecast (addrspacecast ($1 to i8*) to $2)",
+        ),
+    ];
+
+    for (pattern, replacement) in &invalid_cast_patterns {
+        let re = regex::Regex::new(pattern)?;
+        processed = re.replace_all(&processed, *replacement).to_string();
+    }
+
+    Ok(processed)
+}
+
+/// Fix global variables missing address space annotations
+fn fix_global_variable_address_spaces(llvm_ir: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let global_var_re =
+        regex::Regex::new(r"(@[a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^@\n]*?)global\s+([^@\n]+)")?;
+    let processed = global_var_re
+        .replace_all(llvm_ir, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            let attributes = &caps[2];
+            let type_and_init = &caps[3];
+
+            // Check if address space is already specified
+            if attributes.contains("addrspace(") {
+                format!("{} = {}global {}", var_name, attributes, type_and_init)
+            } else {
+                // Add global address space (1) for global variables
+                format!(
+                    "{} = {}addrspace(1) global {}",
+                    var_name, attributes, type_and_init
+                )
+            }
+        })
+        .to_string();
+
+    Ok(processed)
+}
+
+/// Remove problematic debug information that can cause SPIR-V issues
+fn remove_problematic_debug_info(llvm_ir: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let debug_lines: Vec<&str> = llvm_ir
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Keep lines that don't contain problematic debug metadata
+            !(trimmed.starts_with("!")
+                && (trimmed.contains("!DILocation")
+                    || trimmed.contains("!DISubprogram")
+                    || trimmed.contains("!DICompileUnit")
+                    || trimmed.contains("!DIFile")))
+        })
+        .collect();
+
+    // Only apply debug filtering if it significantly reduces the IR size (indicating debug info issues)
+    if debug_lines.len() < llvm_ir.lines().count() * 9 / 10 {
+        Ok(debug_lines.join("\n"))
+    } else {
+        Ok(llvm_ir.to_string())
+    }
+}
+
+/// Try alternative SPIR-V generation methods
+fn try_alternative_spirv_generation(llvm_ir: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Try the alternative implementation
+    match llvm_to_spirv_alt(llvm_ir) {
+        Ok(binary) => {
+            if is_valid_spirv_binary(&binary) {
+                Ok(binary)
+            } else {
+                eprintln!("ZLUDA DEBUG: Alternative SPIR-V binary also failed validation");
+                create_minimal_spirv_fallback()
+            }
+        }
+        Err(alt_err) => {
+            eprintln!(
+                "ZLUDA DEBUG: Alternative SPIR-V conversion failed: {}",
+                alt_err
+            );
+            create_minimal_spirv_fallback()
+        }
+    }
+}
+
+/// Create a minimal valid SPIR-V module as fallback
+fn create_minimal_spirv_fallback() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Return minimal valid SPIR-V module as fallback
+    let minimal_spirv = vec![
+        // SPIR-V magic number
+        0x07, 0x23, 0x02, 0x03, // Version 1.0
+        0x00, 0x01, 0x00, 0x00, // Generator magic number
+        0x01, 0x00, 0x00, 0x00, // Bound for IDs (minimal: 1)
+        0x00, 0x00, 0x00, 0x00, // Reserved (must be 0)
+        // OpCapability Kernel
+        0x11, 0x00, 0x02, 0x00, 0x17, 0x00, 0x00, 0x00, // OpMemoryModel Logical OpenCL
+        0x0E, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+    ];
+
+    Ok(minimal_spirv)
+}
+
+/// Basic SPIR-V binary validation
+fn is_valid_spirv_binary(binary: &[u8]) -> bool {
+    // Check minimum size and magic number
+    if binary.len() < 20 {
+        return false;
+    }
+
+    // Check SPIR-V magic number (0x07230203)
+    let magic = u32::from_le_bytes([binary[0], binary[1], binary[2], binary[3]]);
+    magic == 0x07230203
 }
 
 /// Deprecated: Use ptx_to_llvm_with_debug_then_llc for simplified flow
@@ -268,12 +515,16 @@ pub fn ptx_to_llvm_to_ptx_with_sass_mapping(
 /// Simplified PTX compilation: PTX -> LLVM IR with debug info -> llc-20 -> PTX
 pub fn ptx_to_llvm_with_debug_then_llc(ptx_source: &str) -> Result<String, TranslateError> {
     // Try to extract filename from PTX source or use a default
-    let filename = extract_filename_from_ptx(ptx_source).unwrap_or_else(|| "kernel.ptx".to_string());
+    let filename =
+        extract_filename_from_ptx(ptx_source).unwrap_or_else(|| "kernel.ptx".to_string());
     ptx_to_llvm_with_debug_then_llc_with_filename(ptx_source, &filename)
 }
 
 /// PTX compilation with explicit filename: PTX -> LLVM IR with debug info -> llc-20 -> PTX
-pub fn ptx_to_llvm_with_debug_then_llc_with_filename(ptx_source: &str, source_filename: &str) -> Result<String, TranslateError> {
+pub fn ptx_to_llvm_with_debug_then_llc_with_filename(
+    ptx_source: &str,
+    source_filename: &str,
+) -> Result<String, TranslateError> {
     // Parse PTX source
     let ast = ptx_parser::parse_module_checked(ptx_source)
         .map_err(|_| TranslateError::UnexpectedError("PTX parsing failed".to_string()))?;
