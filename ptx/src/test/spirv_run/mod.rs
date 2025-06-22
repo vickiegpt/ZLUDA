@@ -407,7 +407,11 @@ fn run_hip<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Def
             &*module.llvm_ir,
             module.linked_bitcode(),
         )
-        .unwrap();
+        .map_err(|e| {
+            eprintln!("ZLUDA ERROR: Failed to compile bitcode: {:?}", e);
+            eprintln!("ZLUDA DEBUG: Check that AMD ROCm is properly installed and compatible");
+            e
+        })?;
         let mut module = unsafe { mem::zeroed() };
         unsafe { hipModuleLoadData(&mut module, elf_module.as_ptr() as _) }.unwrap();
         let mut kernel = unsafe { mem::zeroed() };

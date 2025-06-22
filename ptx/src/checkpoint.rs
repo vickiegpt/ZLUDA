@@ -1,6 +1,7 @@
 use crate::debug::{DwarfMappingEntry, PtxSourceLocation};
 use crate::TranslateError;
-use base64::prelude::*;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
+use rand::random;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -181,7 +182,7 @@ impl CheckpointManager {
             .unwrap()
             .as_secs();
 
-        let id = format!("checkpoint_{}_{}", timestamp, rand::random::<u16>());
+        let id = format!("checkpoint_{}_{}", timestamp, random::<u16>());
 
         let metadata = CheckpointMetadata {
             id: id.clone(),
@@ -254,7 +255,7 @@ impl CheckpointManager {
     ) -> Result<(), CheckpointError> {
         if let Some(checkpoint) = self.active_checkpoints.get_mut(checkpoint_id) {
             checkpoint.performance_stats.spirv_binary_size_bytes = spirv_binary.len();
-            checkpoint.spirv_binary = Some(base64::prelude::BASE64_STANDARD.encode(&spirv_binary));
+            checkpoint.spirv_binary = Some(BASE64_STANDARD.encode(&spirv_binary));
             Ok(())
         } else {
             Err(CheckpointError::CheckpointNotFound(

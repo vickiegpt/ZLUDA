@@ -293,7 +293,7 @@ fn demo_command() -> Result<(), Box<dyn std::error::Error>> {
     // 编译所有演示代码
     for (name, ptx_source) in demo_ptx_sources {
         println!("\n🔨 编译演示: {}", name);
-        println!("{'=':<50}");
+        println!("{:=<50}", "");
 
         match compiler.compile_ptx_with_checkpoints(ptx_source, Some(name.to_string())) {
             Ok(result) => {
@@ -307,20 +307,20 @@ fn demo_command() -> Result<(), Box<dyn std::error::Error>> {
 
     // 显示检查点列表
     println!("\n📋 创建的检查点:");
-    println!("{'=':<50}");
+    println!("{:=<50}", "");
     for checkpoint in compiler.list_checkpoints() {
         println!("🔹 {}: {}", checkpoint.id, checkpoint.description);
     }
 
     // 生成报告
     println!("\n📊 编译报告:");
-    println!("{'=':<50}");
+    println!("{:=<50}", "");
     println!("{}", compiler.generate_compilation_report());
 
     // 演示检查点恢复
     if let Some(checkpoint) = compiler.list_checkpoints().first() {
         println!("\n🔄 演示检查点恢复:");
-        println!("{'=':<50}");
+        println!("{:=<50}", "");
 
         match compiler.resume_from_checkpoint(&checkpoint.id) {
             Ok(_) => {

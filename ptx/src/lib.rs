@@ -16,6 +16,7 @@ pub use pass::{
 };
 use std::collections::HashMap;
 use std::ptr;
+use regex;
 
 // Implementation for PTX to LLVM IR conversion
 pub fn ptx_to_llvm(ast: ptx_parser::Module) -> Result<Module, TranslateError> {
