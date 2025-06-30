@@ -1,11 +1,12 @@
-use amd_comgr_sys::*;
 #[cfg(feature = "amd")]
 use amd_comgr_sys::*;
 #[cfg(feature = "intel")]
 use intel_comgr_sys::*;
-#[cfg(feature = "intel")]
-use std::ffi::CString;
-use std::{ffi::CStr, mem, ptr};
+#[cfg(feature = "gemmini")]
+use gemmini_comgr_sys::*;
+#[cfg(feature = "tenstorrent")]
+use tt_comgr_sys::*;
+use std::{ffi::{CStr, CString}, mem, ptr};
 
 #[cfg(feature = "amd")]
 struct Data(amd_comgr_data_t);
@@ -690,4 +691,154 @@ fn do_action(
             Err(e)
         }
     }
+}
+
+#[cfg(feature = "gemmini")]
+pub fn compile_bitcode(
+    gcn_arch: &CStr,
+    main_buffer: &[u8],
+    ptx_impl: &[u8],
+) -> Result<Vec<u8>, tt_comgr_status_s> {
+    eprintln!("ZLUDA DEBUG: Compiling bitcode for Gemmini accelerator");
+    eprintln!(
+        "ZLUDA DEBUG: Main buffer size: {} bytes, PTX impl size: {} bytes",
+        main_buffer.len(),
+        ptx_impl.len()
+    );
+    eprintln!(
+        "ZLUDA DEBUG: Target architecture: {:?}",
+        gcn_arch.to_string_lossy()
+    );
+
+    // Create input data set
+    let mut input_data_set = unsafe { mem::zeroed() };
+    tt_comgr_create_data_set(&mut input_data_set)?;
+
+    // Create main bitcode data
+    let mut main_data = unsafe { mem::zeroed() };
+    tt_comgr_create_data(
+        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC,
+        &mut main_data,
+    )?;
+    tt_comgr_data_set_bytes(
+        main_data,
+        main_buffer.as_ptr() as *const std::os::raw::c_void,
+        main_buffer.len(),
+    )?;
+    tt_comgr_data_set_name(main_data, c"main.bc".as_ptr())?;
+    tt_comgr_data_set_add(input_data_set, main_data)?;
+
+    // If PTX impl is provided, add it too
+    if !ptx_impl.is_empty() {
+        let mut ptx_data = unsafe { mem::zeroed() };
+        tt_comgr_create_data(
+            tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC,
+            &mut ptx_data,
+        )?;
+        tt_comgr_data_set_bytes(
+            ptx_data,
+            ptx_impl.as_ptr() as *const std::os::raw::c_void,
+            ptx_impl.len(),
+        )?;
+        tt_comgr_data_set_name(ptx_data, c"ptx_impl.bc".as_ptr())?;
+        tt_comgr_data_set_add(input_data_set, ptx_data)?;
+    }
+
+    // Create action info
+    let mut action_info = unsafe { mem::zeroed() };
+    tt_comgr_create_action_info(&mut action_info)?;
+
+    // Set language to LLVM IR
+    tt_comgr_action_info_set_language(
+        action_info,
+        tt_comgr_language_s::TT_COMGR_LANGUAGE_LLVM_IR,
+    )?;
+
+    // Create output data set
+    let mut output_data_set = unsafe { mem::zeroed() };
+    tt_comgr_create_data_set(&mut output_data_set)?;
+
+    // First link all bitcode together if needed
+    let linked_data_set = if !ptx_impl.is_empty() {
+        eprintln!("ZLUDA DEBUG: Linking bitcode modules");
+        let mut linked_set = unsafe { mem::zeroed() };
+        tt_comgr_create_data_set(&mut linked_set)?;
+        
+        tt_comgr_do_action(
+            tt_comgr_action_kind_s::TT_COMGR_ACTION_LINK_BC_TO_BC,
+            action_info,
+            input_data_set,
+            linked_set,
+        )?;
+        
+        linked_set
+    } else {
+        input_data_set
+    };
+
+    // Optimize the bitcode
+    eprintln!("ZLUDA DEBUG: Optimizing bitcode");
+    let mut optimized_set = unsafe { mem::zeroed() };
+    tt_comgr_create_data_set(&mut optimized_set)?;
+    
+    tt_comgr_do_action(
+        tt_comgr_action_kind_s::TT_COMGR_ACTION_OPTIMIZE_BC_TO_BC,
+        action_info,
+        linked_data_set,
+        optimized_set,
+    )?;
+
+    // Generate executable
+    eprintln!("ZLUDA DEBUG: Generating Gemmini executable");
+    tt_comgr_do_action(
+        tt_comgr_action_kind_s::TT_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE,
+        action_info,
+        optimized_set,
+        output_data_set,
+    )?;
+
+    // Get the output data
+    let mut count = 0;
+    tt_comgr_get_data_count(output_data_set, &mut count)?;
+    
+    if count == 0 {
+        eprintln!("ZLUDA ERROR: No output generated");
+        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+    }
+
+    // Get first output data
+    let mut output_data = unsafe { mem::zeroed() };
+    tt_comgr_get_data(output_data_set, 0, &mut output_data)?;
+
+    // Get size
+    let mut size = 0;
+    tt_comgr_data_get_bytes(
+        output_data,
+        std::ptr::null_mut(),
+        &mut size,
+    )?;
+
+    // Read content
+    let mut result = vec![0u8; size];
+    tt_comgr_data_get_bytes(
+        output_data,
+        result.as_mut_ptr() as *mut std::os::raw::c_void,
+        &mut size,
+    )?;
+
+    // Cleanup
+    tt_comgr_release_data(output_data)?;
+    tt_comgr_release_data_set(output_data_set)?;
+    if !ptx_impl.is_empty() {
+        tt_comgr_release_data_set(linked_data_set)?;
+    }
+    tt_comgr_release_data_set(optimized_set)?;
+    tt_comgr_release_action_info(action_info)?;
+
+    eprintln!(
+        "ZLUDA DEBUG: Gemmini compilation complete, output size: {} bytes",
+        result.len()
+    );
+    
+    Ok(result)
 }

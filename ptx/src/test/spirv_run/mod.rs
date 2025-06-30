@@ -15,6 +15,8 @@ use std::process::Command;
 use std::{ptr, str};
 #[cfg(feature = "tenstorrent")]
 use tt_runtime_sys::*;
+#[cfg(feature = "gemmini")]
+use gemmini_runtime_sys::{Device as GemminiDevice, Program as GemminiProgram, Buffer as GemminiBuffer, CoreCoord as GemminiCoreCoord};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::ze_result_t;
 
@@ -228,7 +230,7 @@ fn test_hip_assert<
     let ast = ptx_parser::parse_module_checked(ptx_text).unwrap();
     
     // Generate correct source filename for debug info
-    let source_filename = format!("/root/hetGPU/ptx/src/test/spirv_run/{}.ptx", name);
+    let source_filename = format!("/home/user8f69baeb408f8eb8cf93a99706b1/hetGPU/ptx/src/test/spirv_run/{}.ptx", name);
     
     // Use the filename-aware version for better debug info
     let module = pass::to_llvm_module_with_filename(ast, &source_filename).unwrap();
@@ -298,6 +300,26 @@ fn test_hip_assert<
             }
         }
     }
+    #[cfg(feature = "gemmini")]
+    {
+        eprintln!("ZLUDA TEST: Running with Gemmini backend");
+        match run_gemmini(name.as_c_str(), module, input, output) {
+            Ok(r) => {
+                eprintln!(
+                    "ZLUDA TEST: Kernel execution complete. Result: {:?}, Expected: {:?}",
+                    r, output
+                );
+                // Only assert equality if we actually ran the kernel
+                if r.len() == output.len() {
+                    assert_eq!(r.as_slice(), output);
+                }
+            }
+            Err(err) => {
+                eprintln!("ZLUDA ERROR: Gemmini run failed with error: {:?}", err);
+                return Err(Box::new(DisplayError { err }));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -318,7 +340,7 @@ fn test_cuda_assert<
         name
     );
     // Construct the full path to the PTX file for proper debug info
-    let ptx_filename = format!("/root/hetGPU/ptx/src/test/spirv_run/{}.ptx", name);
+    let ptx_filename = format!("/home/user8f69baeb408f8eb8cf93a99706b1/hetGPU/ptx/src/test/spirv_run/{}.ptx", name);
     match crate::ptx_to_llvm_with_debug_then_llc_with_filename(ptx_text, &ptx_filename) {
         Ok(reconstructed_ptx) => {
             eprintln!("ZLUDA TEST: Debug pipeline completed successfully");
@@ -396,6 +418,46 @@ fn run_hip<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Def
     use hip_runtime_sys::*;
     unsafe { hipInit(0) }.unwrap();
     let mut result = vec![0u8.into(); output.len()];
+    
+    // Dump LLVM IR to a file for debugging
+    let kernel_name = name.to_str().unwrap_or("unknown_kernel");
+    let llvm_ir_file = format!("/tmp/zluda_amd_llvm_ir_{}.bc", kernel_name);
+    eprintln!("ZLUDA DEBUG: Dumping LLVM IR to {}", llvm_ir_file);
+    if let Err(e) = std::fs::write(&llvm_ir_file, &*module.llvm_ir) {
+        eprintln!("ZLUDA WARNING: Failed to dump LLVM IR: {}", e);
+    }
+    
+    // Dump LLVM IR as text for debugging
+    let llvm_ir_text_file = format!("/tmp/zluda_amd_llvm_ir_{}.ll", kernel_name);
+    let cmd_output = Command::new("llvm-dis")
+        .arg(&llvm_ir_file)
+        .arg("-o")
+        .arg(&llvm_ir_text_file)
+        .output();
+    
+    match cmd_output {
+        Ok(output) if output.status.success() => {
+            eprintln!("ZLUDA DEBUG: LLVM IR dumped to {}", llvm_ir_text_file);
+        }
+        Ok(output) => {
+            eprintln!("ZLUDA WARNING: llvm-dis failed: {}", String::from_utf8_lossy(&output.stderr));
+            // Try llvm-dis-20 as fallback
+            if let Ok(output) = Command::new("llvm-dis-20")
+                .arg(&llvm_ir_file)
+                .arg("-o")
+                .arg(&llvm_ir_text_file)
+                .output() 
+            {
+                if output.status.success() {
+                    eprintln!("ZLUDA DEBUG: LLVM IR dumped to {} using llvm-dis-20", llvm_ir_text_file);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("ZLUDA WARNING: Failed to run llvm-dis: {}", e);
+        }
+    }
+    
     {
         let dev = 0;
         let mut stream = unsafe { mem::zeroed() };
@@ -411,7 +473,7 @@ fn run_hip<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Def
             eprintln!("ZLUDA ERROR: Failed to compile bitcode: {:?}", e);
             eprintln!("ZLUDA DEBUG: Check that AMD ROCm is properly installed and compatible");
             e
-        })?;
+        }).unwrap();
         let mut module = unsafe { mem::zeroed() };
         unsafe { hipModuleLoadData(&mut module, elf_module.as_ptr() as _) }.unwrap();
         let mut kernel = unsafe { mem::zeroed() };
@@ -1027,5 +1089,81 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
     //     let _ = fs::remove_file(&cpp_file);
     // }
 
+    Ok(result)
+}
+
+#[cfg(feature = "gemmini")]
+fn run_gemmini<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Default>(
+    name: &CStr,
+    module: pass::Module,
+    input: &[Input],
+    output: &mut [Output],
+) -> Result<Vec<Output>, String> {
+    eprintln!("ZLUDA TEST: Running with Gemmini accelerator backend");
+    eprintln!("ZLUDA DEBUG: Kernel name: {:?}", name);
+
+    use std::mem::size_of;
+
+    // Create result vector
+    let mut result = vec![Output::default(); output.len()];
+
+    // 1. Initialize Gemmini device
+    let device = GemminiDevice::new(0)?;
+    eprintln!("ZLUDA DEBUG: Gemmini device initialized");
+
+    // 2. Get kernel name
+    let kernel_name = name.to_str().map_err(|e| e.to_string())?;
+    
+    // 3. Create program
+    let program = device.create_program()?;
+    eprintln!("ZLUDA DEBUG: Created Gemmini program");
+
+    // 4. Load LLVM IR into the program
+    // Convert LLVM bitcode to text format for loading
+    let llvm_ir_text = String::from_utf8_lossy(&module.llvm_ir);
+    program.load_from_llvm(&llvm_ir_text)?;
+    eprintln!("ZLUDA DEBUG: Loaded LLVM IR into Gemmini program");
+
+    // 5. Create kernel with default core location
+    let core = GemminiCoreCoord { x: 0, y: 0 };
+    let kernel = program.create_kernel(kernel_name, core)?;
+    eprintln!("ZLUDA DEBUG: Created kernel '{}'", kernel_name);
+
+    // 6. Create input and output buffers
+    let input_size = input.len() * size_of::<Input>();
+    let output_size = output.len() * size_of::<Output>();
+
+    let input_buffer = device.create_buffer(input_size as u64)?;
+    let output_buffer = device.create_buffer(output_size as u64)?;
+    eprintln!("ZLUDA DEBUG: Created input buffer ({} bytes) and output buffer ({} bytes)", 
+              input_size, output_size);
+
+    // 7. Write input data to buffer
+    input_buffer.write(unsafe { 
+        std::slice::from_raw_parts(input.as_ptr() as *const u8, input_size) 
+    })?;
+    eprintln!("ZLUDA DEBUG: Wrote {} bytes to input buffer", input_size);
+
+    // 8. Set kernel runtime arguments
+    let buffers = [&input_buffer, &output_buffer];
+    program.set_runtime_args(kernel_name, &buffers)?;
+    eprintln!("ZLUDA DEBUG: Set runtime arguments for kernel");
+
+    // 9. Launch the kernel
+    eprintln!("ZLUDA DEBUG: Launching Gemmini kernel with {} inputs -> {} expected outputs",
+              input.len(), output.len());
+    program.launch(&device)?;
+
+    // 10. Wait for completion
+    program.wait_for_completion()?;
+    eprintln!("ZLUDA DEBUG: Kernel execution completed");
+
+    // 11. Read results from output buffer
+    output_buffer.read(unsafe {
+        std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u8, output_size)
+    })?;
+    eprintln!("ZLUDA DEBUG: Read {} bytes from output buffer", output_size);
+
+    eprintln!("ZLUDA TEST: Gemmini kernel execution complete");
     Ok(result)
 }

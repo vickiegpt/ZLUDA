@@ -20,6 +20,7 @@ strum_macros = "0.26"
 hip_runtime_sys = { path = "../ext/hip_runtime-sys" }
 ze_runtime_sys = { path = "../ext/ze_runtime-sys" }
 tt_runtime_sys = { path = "../ext/tt_runtime-sys" }
+gemmini_runtime_sys = { path = "../ext/gemmini_runtime-sys" }
 tempfile = "3"
 which = "4.4"
 libc = "0.2"
@@ -49,3 +50,4 @@ path = "examples/checkpoint_demo.rs"
 intel = ["comgr/intel"]
 amd = ["comgr/amd"]
 tenstorrent = ["comgr/tenstorrent"]
+gemmini = ["comgr/gemmini"]

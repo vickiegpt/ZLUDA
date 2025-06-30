@@ -1,0 +1,16 @@
+[package]
+name = "gemmini_runtime_sys"
+version = "0.1.0"
+authors = ["ZLUDA Team"]
+edition = "2021"
+links = "gemmini"
+description = "Rust bindings for Gemmini Runtime using Spike RISC-V ISA Simulator"
+license = "MIT"
+
+[lib]
+
+[dependencies]
+tempfile = "3.8.0"
+libc = "0.2"
+
+[build-dependencies]
