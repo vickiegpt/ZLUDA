@@ -32,4 +32,8 @@ features = [
     "amd",
     "intel",
     "tenstorrent",
+    "gemmini",
+]
+default = [
+    "gemmini"
 ]

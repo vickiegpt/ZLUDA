@@ -12,19 +12,19 @@ use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
 use crate::{
-    tt_comgr_action_info_set_language, tt_comgr_action_info_set_option_list,
-    tt_comgr_action_info_set_target, tt_comgr_action_info_t, tt_comgr_action_kind_s,
-    tt_comgr_create_action_info, tt_comgr_create_data, tt_comgr_create_data_set,
-    tt_comgr_data_get_bytes, tt_comgr_data_kind_s, tt_comgr_data_set_add,
-    tt_comgr_data_set_bytes, tt_comgr_data_set_name, tt_comgr_data_set_t,
-    tt_comgr_data_t, tt_comgr_do_action, tt_comgr_get_data, tt_comgr_get_data_count,
-    tt_comgr_language_s, tt_comgr_release_action_info, tt_comgr_release_data,
-    tt_comgr_release_data_set, tt_comgr_status_s, tt_comgr_status_t,
+    gemmini_comgr_action_info_set_language, gemmini_comgr_action_info_set_option_list,
+    gemmini_comgr_action_info_set_target, gemmini_comgr_action_info_t, gemmini_comgr_action_kind_s,
+    gemmini_comgr_create_action_info, gemmini_comgr_create_data, gemmini_comgr_create_data_set,
+    gemmini_comgr_data_get_bytes, gemmini_comgr_data_kind_s, gemmini_comgr_data_set_add,
+    gemmini_comgr_data_set_bytes, gemmini_comgr_data_set_name, gemmini_comgr_data_set_t,
+    gemmini_comgr_data_t, gemmini_comgr_do_action, gemmini_comgr_get_data, gemmini_comgr_get_data_count,
+    gemmini_comgr_language_s, gemmini_comgr_release_action_info, gemmini_comgr_release_data,
+    gemmini_comgr_release_data_set, gemmini_comgr_status_s, gemmini_comgr_status_t,
 };
 
 // Actual internal representation of data
 pub(crate) struct DataContent {
-    pub(crate) kind: tt_comgr_data_kind_s,
+    pub(crate) kind: gemmini_comgr_data_kind_s,
     pub(crate) content: Vec<u8>,
     pub(crate) name: Option<String>,
 }
@@ -52,7 +52,7 @@ pub(crate) fn get_next_handle() -> u64 {
 
 #[derive(Default, Clone)]
 pub(crate) struct ActionInfo {
-    pub(crate) language: Option<tt_comgr_language_s>,
+    pub(crate) language: Option<gemmini_comgr_language_s>,
     pub(crate) options: Vec<String>,
     pub(crate) working_directory: Option<String>,
     pub(crate) target: Option<String>,
@@ -61,24 +61,24 @@ pub(crate) struct ActionInfo {
 struct ActionContext {
     temp_dir: PathBuf,
     options: Vec<String>,
-    language: tt_comgr_language_s,
-    input_files: Vec<(PathBuf, tt_comgr_data_kind_s)>,
+    language: gemmini_comgr_language_s,
+    input_files: Vec<(PathBuf, gemmini_comgr_data_kind_s)>,
     target: Option<String>,
-    action_kind: tt_comgr_action_kind_s,
+    action_kind: gemmini_comgr_action_kind_s,
 }
 
 pub fn perform_action(
-    action_kind: tt_comgr_action_kind_s,
-    action_info: tt_comgr_action_info_t,
-    input_set: tt_comgr_data_set_t,
-    output_set: tt_comgr_data_set_t,
-) -> tt_comgr_status_t {
+    action_kind: gemmini_comgr_action_kind_s,
+    action_info: gemmini_comgr_action_info_t,
+    input_set: gemmini_comgr_data_set_t,
+    output_set: gemmini_comgr_data_set_t,
+) -> gemmini_comgr_status_t {
     // Create a temporary directory for the operation
     let dir = match tempdir() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Failed to create temporary directory: {}", e);
-            return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+            return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
         }
     };
 
@@ -86,7 +86,7 @@ pub fn perform_action(
     let action_info_lock = ACTION_INFO_STORE.lock().unwrap();
     let action_data = match action_info_lock.get(&action_info.handle) {
         Some(data) => data.clone(),
-        None => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
+        None => return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
     };
     drop(action_info_lock);
 
@@ -94,7 +94,7 @@ pub fn perform_action(
     let data_set_lock = DATA_SET_STORE.lock().unwrap();
     let data_handles = match data_set_lock.get(&input_set.handle) {
         Some(handles) => handles.clone(),
-        None => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
+        None => return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT),
     };
     drop(data_set_lock);
 
@@ -147,7 +147,7 @@ pub fn perform_action(
         options: action_data.options,
         language: action_data
             .language
-            .unwrap_or(tt_comgr_language_s::TT_COMGR_LANGUAGE_NONE),
+            .unwrap_or(gemmini_comgr_language_s::GEMMINI_COMGR_LANGUAGE_NONE),
         input_files,
         target: action_data.target,
         action_kind,
@@ -166,7 +166,7 @@ pub fn perform_action(
         8 => compile_to_fatbin(&ctx),
         _ => {
             eprintln!("Unknown action kind: {}", action_kind.0);
-            return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+            return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
         }
     };
 
@@ -186,14 +186,14 @@ pub fn perform_action(
 // Helper function to add output files to the output set
 fn add_outputs_to_set(
     ctx: &ActionContext,
-    output_set: tt_comgr_data_set_t,
-) -> tt_comgr_status_t {
+    output_set: gemmini_comgr_data_set_t,
+) -> gemmini_comgr_status_t {
     let output_dir = ctx.temp_dir.clone();
 
     // Get all files in the output directory
     let entries = match fs::read_dir(&output_dir) {
         Ok(entries) => entries,
-        Err(_) => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR),
+        Err(_) => return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR),
     };
 
     // Track if we've added any output files
@@ -216,7 +216,7 @@ fn add_outputs_to_set(
                     // Add object file to output set as relocatable
                     if let Err(e) = add_file_to_set(
                         &path,
-                        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_RELOCATABLE,
+                        gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_RELOCATABLE,
                         output_set,
                     ) {
                         eprintln!("Warning: Failed to add relocatable file: {:?}", e);
@@ -229,7 +229,7 @@ fn add_outputs_to_set(
                     // Add bitcode/MLIR file to output set
                     if let Err(e) = add_file_to_set(
                         &path,
-                        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC,
+                        gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_BC,
                         output_set,
                     ) {
                         eprintln!("Warning: Failed to add bitcode file: {:?}", e);
@@ -241,7 +241,7 @@ fn add_outputs_to_set(
                     // Add assembly file to output set
                     if let Err(e) = add_file_to_set(
                         &path,
-                        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_SOURCE,
+                        gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_SOURCE,
                         output_set,
                     ) {
                         eprintln!("Warning: Failed to add assembly file: {:?}", e);
@@ -253,7 +253,7 @@ fn add_outputs_to_set(
                     // Add log file to output set
                     if let Err(e) = add_file_to_set(
                         &path,
-                        tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_LOG,
+                        gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_LOG,
                         output_set,
                     ) {
                         eprintln!("Warning: Failed to add log file: {:?}", e);
@@ -269,7 +269,7 @@ fn add_outputs_to_set(
     // If no files were added, add a dummy empty relocatable file
     if !added_files
         && ctx.action_kind.0
-            == tt_comgr_action_kind_s::TT_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE.0
+            == gemmini_comgr_action_kind_s::GEMMINI_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE.0
     {
         eprintln!("No output files found - creating dummy Gemmini ELF output");
 
@@ -327,8 +327,8 @@ fn add_outputs_to_set(
         // Create the data object for the dummy file
         let mut data = unsafe { mem::zeroed() };
         if let Err(e) = unsafe {
-            tt_comgr_create_data(
-                tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_RELOCATABLE,
+            gemmini_comgr_create_data(
+                gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_RELOCATABLE,
                 &mut data,
             )
         } {
@@ -338,34 +338,34 @@ fn add_outputs_to_set(
 
         // Set the data name
         let name = CString::new("gemmini_output.elf").unwrap();
-        if let Err(e) = unsafe { tt_comgr_data_set_name(data, name.as_ptr()) } {
+        if let Err(e) = unsafe { gemmini_comgr_data_set_name(data, name.as_ptr()) } {
             eprintln!("Failed to set data name: {:?}", e);
-            unsafe { tt_comgr_release_data(data).ok() };
+            unsafe { gemmini_comgr_release_data(data).ok() };
             return Err(e);
         }
 
         // Set the data content
         if let Err(e) = unsafe {
-            tt_comgr_data_set_bytes(
+            gemmini_comgr_data_set_bytes(
                 data,
                 dummy_content.as_ptr() as *const c_void,
                 dummy_content.len(),
             )
         } {
             eprintln!("Failed to set data bytes: {:?}", e);
-            unsafe { tt_comgr_release_data(data).ok() };
+            unsafe { gemmini_comgr_release_data(data).ok() };
             return Err(e);
         }
 
         // Add data to the output set
-        if let Err(e) = unsafe { tt_comgr_data_set_add(output_set, data) } {
+        if let Err(e) = unsafe { gemmini_comgr_data_set_add(output_set, data) } {
             eprintln!("Failed to add data to output set: {:?}", e);
-            unsafe { tt_comgr_release_data(data).ok() };
+            unsafe { gemmini_comgr_release_data(data).ok() };
             return Err(e);
         }
 
         // Release the data (it's been added to the set)
-        unsafe { tt_comgr_release_data(data).ok() };
+        unsafe { gemmini_comgr_release_data(data).ok() };
         eprintln!("Added dummy Gemmini ELF file to output set");
 
         added_files = true;
@@ -381,12 +381,12 @@ fn add_outputs_to_set(
 // Helper function to add a file to a data set
 fn add_file_to_set(
     file_path: &Path,
-    kind: tt_comgr_data_kind_s,
-    data_set: tt_comgr_data_set_t,
-) -> tt_comgr_status_t {
+    kind: gemmini_comgr_data_kind_s,
+    data_set: gemmini_comgr_data_set_t,
+) -> gemmini_comgr_status_t {
     // Create a new data object
     let mut data = unsafe { mem::zeroed() };
-    if let Err(e) = unsafe { tt_comgr_create_data(kind, &mut data) } {
+    if let Err(e) = unsafe { gemmini_comgr_create_data(kind, &mut data) } {
         eprintln!("Failed to create data: {:?}", e);
         return Err(e);
     }
@@ -397,20 +397,20 @@ fn add_file_to_set(
             Ok(cstr) => cstr,
             Err(_) => {
                 eprintln!("Error converting filename to CString");
-                unsafe { tt_comgr_release_data(data).ok() };
-                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+                unsafe { gemmini_comgr_release_data(data).ok() };
+                return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
             }
         },
         None => {
             eprintln!("Error getting filename");
-            unsafe { tt_comgr_release_data(data).ok() };
-            return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+            unsafe { gemmini_comgr_release_data(data).ok() };
+            return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
         }
     };
 
-    if let Err(e) = unsafe { tt_comgr_data_set_name(data, name.as_ptr()) } {
+    if let Err(e) = unsafe { gemmini_comgr_data_set_name(data, name.as_ptr()) } {
         eprintln!("Failed to set data name: {:?}", e);
-        unsafe { tt_comgr_release_data(data).ok() };
+        unsafe { gemmini_comgr_release_data(data).ok() };
         return Err(e);
     }
 
@@ -419,49 +419,49 @@ fn add_file_to_set(
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("Error reading file {}: {}", file_path.display(), e);
-            unsafe { tt_comgr_release_data(data).ok() };
-            return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+            unsafe { gemmini_comgr_release_data(data).ok() };
+            return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
         }
     };
 
     // Set the data content
     if let Err(e) = unsafe {
-        tt_comgr_data_set_bytes(data, content.as_ptr() as *const c_void, content.len())
+        gemmini_comgr_data_set_bytes(data, content.as_ptr() as *const c_void, content.len())
     } {
         eprintln!("Failed to set data bytes: {:?}", e);
-        unsafe { tt_comgr_release_data(data).ok() };
+        unsafe { gemmini_comgr_release_data(data).ok() };
         return Err(e);
     }
 
     // Add data to the set
-    if let Err(e) = unsafe { tt_comgr_data_set_add(data_set, data) } {
+    if let Err(e) = unsafe { gemmini_comgr_data_set_add(data_set, data) } {
         eprintln!("Failed to add data to set: {:?}", e);
-        unsafe { tt_comgr_release_data(data).ok() };
+        unsafe { gemmini_comgr_release_data(data).ok() };
         return Err(e);
     }
 
     // Release the data (it's been added to the set)
-    unsafe { tt_comgr_release_data(data).ok() };
+    unsafe { gemmini_comgr_release_data(data).ok() };
 
     Ok(())
 }
 
 // Action implementations using Buddy Compiler
 
-fn preprocess_source(ctx: &ActionContext) -> tt_comgr_status_t {
+fn preprocess_source(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // For Gemmini, preprocessing is minimal
     // Just copy source files with preprocessing markers
     
     let source_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_SOURCE.0)
+        .filter(|(_, kind)| kind.0 == gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_SOURCE.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if source_files.is_empty() {
         eprintln!("Error: No source files found for preprocessing");
-        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     for input_file in source_files {
@@ -478,7 +478,7 @@ fn preprocess_source(ctx: &ActionContext) -> tt_comgr_status_t {
             }
             Err(e) => {
                 eprintln!("Error preprocessing file: {}", e);
-                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+                return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -486,24 +486,24 @@ fn preprocess_source(ctx: &ActionContext) -> tt_comgr_status_t {
     Ok(())
 }
 
-fn add_precompiled_headers(ctx: &ActionContext) -> tt_comgr_status_t {
+fn add_precompiled_headers(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // Gemmini doesn't use precompiled headers
     eprintln!("Note: Precompiled headers not used for Gemmini target");
     Ok(())
 }
 
-fn compile_source_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
+fn compile_source_to_bc(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // Find source files
     let source_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_SOURCE.0)
+        .filter(|(_, kind)| kind.0 == gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_SOURCE.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if source_files.is_empty() {
         eprintln!("Error: No source files found for BC compilation");
-        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     // Check if any input file is MLIR format
@@ -533,7 +533,7 @@ fn compile_source_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
             }
             Err(e) => {
                 eprintln!("Error writing LLVM bitcode: {}", e);
-                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+                return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -541,7 +541,7 @@ fn compile_source_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
     Ok(())
 }
 
-fn add_device_libraries(ctx: &ActionContext) -> tt_comgr_status_t {
+fn add_device_libraries(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // Gemmini uses its own runtime libraries
     eprintln!("Note: Using Gemmini runtime libraries");
     
@@ -549,7 +549,7 @@ fn add_device_libraries(ctx: &ActionContext) -> tt_comgr_status_t {
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
@@ -566,7 +566,7 @@ fn add_device_libraries(ctx: &ActionContext) -> tt_comgr_status_t {
             }
             Err(e) => {
                 eprintln!("Error copying bitcode: {}", e);
-                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+                return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -574,12 +574,12 @@ fn add_device_libraries(ctx: &ActionContext) -> tt_comgr_status_t {
     Ok(())
 }
 
-fn link_bc_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
+fn link_bc_to_bc(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // Use LLVM tools to link bitcode files
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
@@ -591,7 +591,7 @@ fn link_bc_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     eprintln!("Error copying bitcode: {}", e);
-                    return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+                    return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
                 }
             }
         }
@@ -617,7 +617,7 @@ fn link_bc_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
                 // Fallback: just copy first file
                 match fs::copy(&bc_files[0], &output_file) {
                     Ok(_) => Ok(()),
-                    Err(e) => Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR),
+                    Err(e) => Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR),
                 }
             }
         }
@@ -625,24 +625,24 @@ fn link_bc_to_bc(ctx: &ActionContext) -> tt_comgr_status_t {
             // llvm-link not available, just copy first file
             match fs::copy(&bc_files[0], &output_file) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR),
+                Err(e) => Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR),
             }
         }
     }
 }
 
-fn optimize_bc_with_buddy(ctx: &ActionContext) -> tt_comgr_status_t {
+fn optimize_bc_with_buddy(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // Use Buddy Compiler optimization passes
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if bc_files.is_empty() {
         eprintln!("Error: No bitcode files found for optimization");
-        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     for input_file in bc_files {
@@ -673,7 +673,7 @@ fn optimize_bc_with_buddy(ctx: &ActionContext) -> tt_comgr_status_t {
                     // Fallback: just copy the file
                     match fs::copy(&input_file, &output_file) {
                         Ok(_) => {},
-                        Err(e) => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR),
+                        Err(e) => return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR),
                     }
                 }
             }
@@ -691,7 +691,7 @@ fn optimize_bc_with_buddy(ctx: &ActionContext) -> tt_comgr_status_t {
                             // Fallback: just copy
                             match fs::copy(&input_file, &output_file) {
                                 Ok(_) => {},
-                                Err(e) => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR),
+                                Err(e) => return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR),
                             }
                         }
                     }
@@ -699,7 +699,7 @@ fn optimize_bc_with_buddy(ctx: &ActionContext) -> tt_comgr_status_t {
                         // No optimization available, just copy
                         match fs::copy(&input_file, &output_file) {
                             Ok(_) => {},
-                            Err(e) => return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR),
+                            Err(e) => return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR),
                         }
                     }
                 }
@@ -710,18 +710,18 @@ fn optimize_bc_with_buddy(ctx: &ActionContext) -> tt_comgr_status_t {
     Ok(())
 }
 
-fn codegen_to_gemmini(ctx: &ActionContext) -> tt_comgr_status_t {
+fn codegen_to_gemmini(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // Generate Gemmini-specific code
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if bc_files.is_empty() {
         eprintln!("Error: No bitcode files found for code generation");
-        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     for input_file in bc_files {
@@ -743,18 +743,18 @@ fn codegen_to_gemmini(ctx: &ActionContext) -> tt_comgr_status_t {
     Ok(())
 }
 
-fn codegen_to_assembly(ctx: &ActionContext) -> tt_comgr_status_t {
+fn codegen_to_assembly(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // Generate RISC-V assembly for Gemmini
     let bc_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_BC.0)
+        .filter(|(_, kind)| kind.0 == gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_BC.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if bc_files.is_empty() {
         eprintln!("Error: No bitcode files found for assembly generation");
-        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     for input_file in bc_files {
@@ -791,7 +791,7 @@ fn codegen_to_assembly(ctx: &ActionContext) -> tt_comgr_status_t {
             }
             Err(e) => {
                 eprintln!("Error creating assembly file: {}", e);
-                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+                return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -799,18 +799,18 @@ fn codegen_to_assembly(ctx: &ActionContext) -> tt_comgr_status_t {
     Ok(())
 }
 
-fn compile_to_fatbin(ctx: &ActionContext) -> tt_comgr_status_t {
+fn compile_to_fatbin(ctx: &ActionContext) -> gemmini_comgr_status_t {
     // Create a Gemmini binary package
     let source_files: Vec<_> = ctx
         .input_files
         .iter()
-        .filter(|(_, kind)| kind.0 == tt_comgr_data_kind_s::TT_COMGR_DATA_KIND_SOURCE.0)
+        .filter(|(_, kind)| kind.0 == gemmini_comgr_data_kind_s::GEMMINI_COMGR_DATA_KIND_SOURCE.0)
         .map(|(path, _)| path.clone())
         .collect();
 
     if source_files.is_empty() {
         eprintln!("Error: No source files found for fatbin generation");
-        return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+        return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
     for input_file in source_files {
@@ -842,7 +842,7 @@ fn compile_to_fatbin(ctx: &ActionContext) -> tt_comgr_status_t {
             }
             Err(e) => {
                 eprintln!("Error creating fatbin: {}", e);
-                return Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR);
+                return Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR);
             }
         }
     }
@@ -852,7 +852,7 @@ fn compile_to_fatbin(ctx: &ActionContext) -> tt_comgr_status_t {
 
 // Helper functions for Buddy Compiler integration
 
-fn process_mlir_with_buddy(ctx: &ActionContext, input_file: &PathBuf) -> tt_comgr_status_t {
+fn process_mlir_with_buddy(ctx: &ActionContext, input_file: &PathBuf) -> gemmini_comgr_status_t {
     eprintln!("Processing MLIR file with Buddy Compiler: {}", input_file.display());
     
     let file_stem = input_file
@@ -919,7 +919,7 @@ fn process_mlir_with_buddy(ctx: &ActionContext, input_file: &PathBuf) -> tt_comg
     }
 }
 
-fn create_gemmini_llvm_ir(input_file: &PathBuf) -> Result<Vec<u8>, tt_comgr_status_s> {
+fn create_gemmini_llvm_ir(input_file: &PathBuf) -> Result<Vec<u8>, gemmini_comgr_status_s> {
     // Create LLVM IR suitable for Gemmini acceleration
     let llvm_ir = format!(
         "; ModuleID = '{}'\n\
@@ -950,7 +950,7 @@ fn create_gemmini_llvm_ir(input_file: &PathBuf) -> Result<Vec<u8>, tt_comgr_stat
     Ok(llvm_ir.into_bytes())
 }
 
-fn generate_riscv_for_gemmini(input_file: &PathBuf, output_file: &PathBuf) -> tt_comgr_status_t {
+fn generate_riscv_for_gemmini(input_file: &PathBuf, output_file: &PathBuf) -> gemmini_comgr_status_t {
     // Try to use RISC-V LLVM to generate code
     let mut cmd = Command::new("llc");
     cmd.arg(input_file)
@@ -967,17 +967,17 @@ fn generate_riscv_for_gemmini(input_file: &PathBuf, output_file: &PathBuf) -> tt
                 Ok(())
             } else {
                 eprintln!("llc failed: {}", String::from_utf8_lossy(&output.stderr));
-                Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
+                Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR)
             }
         }
         Err(_) => {
             eprintln!("llc not available for RISC-V target");
-            Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
+            Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR)
         }
     }
 }
 
-fn create_dummy_gemmini_elf(output_file: &PathBuf) -> tt_comgr_status_t {
+fn create_dummy_gemmini_elf(output_file: &PathBuf) -> gemmini_comgr_status_t {
     // Create a minimal RISC-V ELF for Gemmini
     let mut elf_content = Vec::new();
     
@@ -1029,12 +1029,12 @@ fn create_dummy_gemmini_elf(output_file: &PathBuf) -> tt_comgr_status_t {
         }
         Err(e) => {
             eprintln!("Error writing Gemmini ELF: {}", e);
-            Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
+            Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR)
         }
     }
 }
 
-fn create_fallback_bitcode(output_file: &PathBuf) -> tt_comgr_status_t {
+fn create_fallback_bitcode(output_file: &PathBuf) -> gemmini_comgr_status_t {
     // Create a simple LLVM bitcode file
     let bitcode_content = b"BC\xc0\xde"; // Bitcode magic
     
@@ -1045,7 +1045,7 @@ fn create_fallback_bitcode(output_file: &PathBuf) -> tt_comgr_status_t {
         }
         Err(e) => {
             eprintln!("Error writing fallback bitcode: {}", e);
-            Err(tt_comgr_status_s::TT_COMGR_STATUS_ERROR)
+            Err(gemmini_comgr_status_s::GEMMINI_COMGR_STATUS_ERROR)
         }
     }
 }
