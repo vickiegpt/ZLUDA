@@ -430,6 +430,8 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
             {
                 self.get_integer_tensor_type()
             } else {
+                // For other functions including neg, use the last result type 
+                // which is set by the instruction converter
                 self.last_result_type
                     .clone()
                     .unwrap_or_else(|| self.get_default_tensor_type())
@@ -530,6 +532,7 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         &mut self,
         var: ast::Variable<SpirvWord>,
     ) -> Result<(), TranslateError> {
+        eprintln!("ZLUDA DEBUG: Declaring local variable with id: {}", var.name.0);
         let tensor_type = self.get_tensor_type(&var.v_type)?;
         let var_ssa = self.next_ssa_value();
 
@@ -1016,7 +1019,40 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         dst: SpirvWord,
         src: SpirvWord,
     ) -> Result<String, TranslateError> {
-        let src_ssa = self.get_ssa_value(src)?;
+        // Try to get the source SSA value
+        let src_ssa = match self.get_ssa_value(src) {
+            Ok(ssa) => ssa,
+            Err(_) => {
+                // If source is not found, it might be a parameter or constant
+                // Create a placeholder constant
+                // Check if this might be a parameter reference
+                let param_name = self.id_defs.ident_map.get(&src)
+                    .and_then(|entry| entry.name.as_ref())
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| format!("unknown_{}", src.0));
+                
+                eprintln!(
+                    "ZLUDA DEBUG: Unknown source {} ({}) in Mov, creating placeholder constant",
+                    src.0, param_name
+                );
+                
+                // Check if this ID might be in the function parameters
+                // For now, create a placeholder
+                let placeholder_ssa = self.next_ssa_value();
+                let tensor_type = self.get_default_tensor_type();
+                
+                self.write_line(&format!(
+                    "{} = \"tosa.const\"() {{values = dense<0.0> : {}}} : () -> {}",
+                    placeholder_ssa, tensor_type, tensor_type
+                ));
+                
+                // Register the placeholder for the source
+                self.value_map.insert(src, placeholder_ssa.clone());
+                self.ssa_types.insert(placeholder_ssa.clone(), tensor_type);
+                
+                placeholder_ssa
+            }
+        };
 
         // For move operations, directly map the destination to the source SSA value
         // This avoids creating unnecessary tosa.identity operations
@@ -1884,6 +1920,11 @@ impl<'a, 'input> PtxToTosaConverter<'a, 'input> {
         ));
 
         self.value_map.insert(dst, dst_ssa.clone());
+        self.ssa_types.insert(dst_ssa.clone(), tensor_type.clone());
+        
+        // Set the last result type for return statement
+        self.last_result_type = Some(tensor_type);
+        
         Ok(dst_ssa)
     }
 

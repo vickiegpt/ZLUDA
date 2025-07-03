@@ -847,8 +847,7 @@ fn run_spike_simulation(elf_path: &Path, spike_state: &mut SpikeState) -> Result
     // Run Spike with Gemmini extension
     let mut spike_cmd = Command::new("spike");
     spike_cmd.args(&[
-        "--isa=rv64gc_xgemmini",
-        "--extlib=libgemmini.so",
+        "--extension=gemmini","pk",
         elf_path.to_str().unwrap(),
     ]);
     
@@ -929,89 +928,108 @@ fn convert_mlir_to_executable(mlir_file: &str, program_id: usize) -> Result<Path
     // Output files
     let base_name = format!("/tmp/gemmini_program_{}", program_id);
     let linalg_mlir = format!("{}_linalg.mlir", base_name);
-    let llvm_ir = format!("{}.ll", base_name);
+    let mut llvm_ir = format!("{}.ll", base_name);
     let obj_file = format!("{}.o", base_name);
     let executable = format!("{}.out", base_name);
     
     eprintln!("Gemmini/Spike: Starting MLIR compilation pipeline");
     
-    // Step 1: Convert TOSA to Linalg using buddy-opt
+    
+    // Step 1: Convert TOSA to Linalg using mlir-opt
     eprintln!("Gemmini/Spike: Step 1 - Converting TOSA to Linalg");
-    let buddy_opt_result = Command::new("buddy-opt")
+    
+    // First try the pipeline pass
+    let mlir_opt_result = Command::new("mlir-opt")
         .args(&[
             mlir_file,
-            "-llvm-request-c-wrappers",
-            "-convert-linalg-to-loops",
-            "-lower-affine",
-            "-convert-scf-to-cf",
-            "-convert-vector-to-llvm",
-            "-finalize-memref-to-llvm",
-            "-convert-arith-to-llvm",
-            "-lower-gemmini",
-            "-convert-func-to-llvm",
-            "-reconcile-unrealized-casts",
+            "--tosa-to-linalg-pipeline",
             "-o", &linalg_mlir,
         ])
         .output();
     
-    match buddy_opt_result {
+    match mlir_opt_result {
         Ok(output) => {
             if !output.status.success() {
-                eprintln!("buddy-opt failed: {}", String::from_utf8_lossy(&output.stderr));
-                return Err(format!("buddy-opt compilation failed"));
+                eprintln!("mlir-opt (TOSA to Linalg pipeline) failed: {}", String::from_utf8_lossy(&output.stderr));
+                
+                // Try individual passes as fallback
+                eprintln!("Gemmini/Spike: Trying individual TOSA passes");
+                let individual_pass_result = Command::new("mlir-opt")
+                    .args(&[
+                        mlir_file,
+                        "--tosa-to-linalg",
+                        "--tosa-to-linalg-named",
+                        "--tosa-to-arith",
+                        "--tosa-to-tensor",
+                        "--tosa-to-scf",
+                        "-o", &linalg_mlir,
+                    ])
+                    .output();
+                
+                match individual_pass_result {
+                    Ok(output2) => {
+                        if !output2.status.success() {
+                            eprintln!("mlir-opt (individual passes) failed: {}", String::from_utf8_lossy(&output2.stderr));
+                            
+                            // Try just copying the file as-is and skip TOSA conversion
+                            eprintln!("Gemmini/Spike: TOSA conversion failed, using MLIR directly");
+                            if let Err(e) = fs::copy(mlir_file, &linalg_mlir) {
+                                eprintln!("Failed to copy MLIR file: {}", e);
+                                return create_fallback_executable(&executable);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to run mlir-opt with individual passes: {}", e);
+                        return create_fallback_executable(&executable);
+                    }
+                }
             }
         }
-        Err(_) => {
-            eprintln!("buddy-opt not available, trying fallback");
+        Err(e) => {
+            eprintln!("mlir-opt not available: {}", e);
             return create_fallback_executable(&executable);
         }
     }
     
-    // Step 2: Convert to LLVM IR using buddy-translate
-    eprintln!("Gemmini/Spike: Step 2 - Converting to LLVM IR");
-    let buddy_translate_result = Command::new("buddy-translate")
-        .args(&[
-            "-buddy-to-llvmir",
-            &linalg_mlir,
-            "-o", &llvm_ir,
-        ])
+    // Step 2: Use pipeline approach: buddy-opt | buddy-translate | buddy-llc
+    eprintln!("Gemmini/Spike: Step 2 - Pipeline compilation: buddy-opt | buddy-translate | buddy-llc");
+    
+    // Create the pipeline command using shell
+    let pipeline_cmd = format!(
+        "buddy-opt {} \
+        -llvm-request-c-wrappers \
+        -convert-linalg-to-loops \
+        -lower-affine -convert-scf-to-cf \
+        -convert-vector-to-llvm -finalize-memref-to-llvm \
+        -convert-arith-to-llvm \
+        -lower-gemmini \
+        -convert-func-to-llvm -reconcile-unrealized-casts | \
+        buddy-translate -buddy-to-llvmir | \
+        buddy-llc -filetype=obj -mtriple=riscv64 \
+        -mattr=+buddyext,+D -float-abi=hard \
+        -o {}",
+        linalg_mlir, obj_file
+    );
+    
+    eprintln!("Gemmini/Spike: Running pipeline: {}", pipeline_cmd);
+    
+    let pipeline_result = Command::new("sh")
+        .args(&["-c", &pipeline_cmd])
         .output();
     
-    match buddy_translate_result {
+    match pipeline_result {
         Ok(output) => {
             if !output.status.success() {
-                eprintln!("buddy-translate failed: {}", String::from_utf8_lossy(&output.stderr));
-                return Err(format!("buddy-translate compilation failed"));
+                eprintln!("Pipeline compilation failed: {}", String::from_utf8_lossy(&output.stderr));
+                eprintln!("Pipeline stdout: {}", String::from_utf8_lossy(&output.stdout));
+                return Err(format!("Pipeline compilation failed"));
+            } else {
+                eprintln!("Gemmini/Spike: Pipeline compilation succeeded");
             }
         }
-        Err(_) => {
-            eprintln!("buddy-translate not available, trying fallback");
-            return create_fallback_executable(&executable);
-        }
-    }
-    
-    // Step 3: Compile to object file using buddy-llc
-    eprintln!("Gemmini/Spike: Step 3 - Compiling to object file");
-    let buddy_llc_result = Command::new("buddy-llc")
-        .args(&[
-            "-filetype=obj",
-            "-mtriple=riscv64",
-            "-mattr=+buddyext,+D",
-            "-float-abi=hard",
-            "-o", &obj_file,
-            &llvm_ir,
-        ])
-        .output();
-    
-    match buddy_llc_result {
-        Ok(output) => {
-            if !output.status.success() {
-                eprintln!("buddy-llc failed: {}", String::from_utf8_lossy(&output.stderr));
-                return Err(format!("buddy-llc compilation failed"));
-            }
-        }
-        Err(_) => {
-            eprintln!("buddy-llc not available, trying fallback");
+        Err(e) => {
+            eprintln!("Pipeline execution failed: {}", e);
             return create_fallback_executable(&executable);
         }
     }

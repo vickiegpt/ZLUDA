@@ -232,6 +232,13 @@ fn test_hip_assert<
     // Generate correct source filename for debug info
     let source_filename = format!("/home/user8f69baeb408f8eb8cf93a99706b1/hetGPU/ptx/src/test/spirv_run/{}.ptx", name);
     
+    // Parse again for Gemmini since to_llvm_module_with_filename consumes the AST
+    let ast_for_gemmini = if cfg!(feature = "gemmini") {
+        Some(ptx_parser::parse_module_checked(ptx_text).unwrap())
+    } else {
+        None
+    };
+    
     // Use the filename-aware version for better debug info
     let module = pass::to_llvm_module_with_filename(ast, &source_filename).unwrap();
     let name = CString::new(name)?;
@@ -303,21 +310,26 @@ fn test_hip_assert<
     #[cfg(feature = "gemmini")]
     {
         eprintln!("ZLUDA TEST: Running with Gemmini backend");
-        match run_gemmini(name.as_c_str(), module, input, output) {
-            Ok(r) => {
-                eprintln!(
-                    "ZLUDA TEST: Kernel execution complete. Result: {:?}, Expected: {:?}",
-                    r, output
-                );
-                // Only assert equality if we actually ran the kernel
-                if r.len() == output.len() {
-                    assert_eq!(r.as_slice(), output);
+        if let Some(ast_gemmini) = ast_for_gemmini {
+            match run_gemmini(name.as_c_str(), ptx_text, ast_gemmini, module, input, output) {
+                Ok(r) => {
+                    eprintln!(
+                        "ZLUDA TEST: Kernel execution complete. Result: {:?}, Expected: {:?}",
+                        r, output
+                    );
+                    // Only assert equality if we actually ran the kernel
+                    if r.len() == output.len() {
+                        assert_eq!(r.as_slice(), output);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("ZLUDA ERROR: Gemmini run failed with error: {:?}", err);
+                    return Err(Box::new(DisplayError { err }));
                 }
             }
-            Err(err) => {
-                eprintln!("ZLUDA ERROR: Gemmini run failed with error: {:?}", err);
-                return Err(Box::new(DisplayError { err }));
-            }
+        } else {
+            eprintln!("ZLUDA ERROR: AST for Gemmini was not parsed");
+            return Err(Box::new(DisplayError { err: "Missing AST for Gemmini".to_string() }));
         }
     }
 
@@ -429,7 +441,7 @@ fn run_hip<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Def
     
     // Dump LLVM IR as text for debugging
     let llvm_ir_text_file = format!("/tmp/zluda_amd_llvm_ir_{}.ll", kernel_name);
-    let cmd_output = Command::new("llvm-dis")
+    let cmd_output = Command::new("llvm-dis-20")
         .arg(&llvm_ir_file)
         .arg("-o")
         .arg(&llvm_ir_text_file)
@@ -1093,8 +1105,18 @@ fn run_tt<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Defa
 }
 
 #[cfg(feature = "gemmini")]
+fn generate_tosa_mlir_from_ast_gemmini(
+    ast: ptx_parser::Module,
+) -> Result<String, String> {
+    // Convert PTX AST to TOSA MLIR using the existing pipeline
+    pass::to_mlir_module(ast).map_err(|e| format!("Failed to convert PTX to MLIR: {:?}", e))
+}
+
+#[cfg(feature = "gemmini")]
 fn run_gemmini<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug + Default>(
     name: &CStr,
+    ptx_text: &str,
+    ast: ptx_parser::Module,
     module: pass::Module,
     input: &[Input],
     output: &mut [Output],
@@ -1118,11 +1140,13 @@ fn run_gemmini<Input: From<u8> + Copy + Debug, Output: From<u8> + Copy + Debug +
     let program = device.create_program()?;
     eprintln!("ZLUDA DEBUG: Created Gemmini program");
 
-    // 4. Load LLVM IR into the program
-    // Convert LLVM bitcode to text format for loading
-    let llvm_ir_text = String::from_utf8_lossy(&module.llvm_ir);
-    program.load_from_llvm(&llvm_ir_text)?;
-    eprintln!("ZLUDA DEBUG: Loaded LLVM IR into Gemmini program");
+    // 4. Generate TOSA MLIR from PTX AST
+    let tosa_mlir = generate_tosa_mlir_from_ast_gemmini(ast)?;
+    eprintln!("ZLUDA DEBUG: Generated TOSA MLIR for Gemmini");
+    
+    // 5. Load TOSA MLIR into the program
+    program.load_from_mlir(&tosa_mlir)?;
+    eprintln!("ZLUDA DEBUG: Loaded TOSA MLIR into Gemmini program");
 
     // 5. Create kernel with default core location
     let core = GemminiCoreCoord { x: 0, y: 0 };
